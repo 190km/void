@@ -1,0 +1,184 @@
+// Terminal renderer — renders at fixed font size in canvas space.
+// Uses painter_at() to clip text to the panel body (no overflow).
+// GPU TSTransform handles zoom scaling of the rasterized glyphs.
+
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::Term;
+use alacritty_terminal::vte::ansi::CursorShape;
+use egui::{Color32, FontId, Pos2, Rect, Vec2};
+
+use crate::terminal::colors::{self, DEFAULT_BG};
+use crate::terminal::pty::EventProxy;
+
+pub const FONT_SIZE: f32 = 20.0;
+pub const PAD_X: f32 = 8.0;
+pub const PAD_Y: f32 = 4.0;
+
+/// Public cell size for mouse coordinate mapping.
+#[allow(dead_code)]
+pub fn cell_size(ctx: &egui::Context) -> (f32, f32) { measure_cell(ctx) }
+
+fn measure_cell(ctx: &egui::Context) -> (f32, f32) {
+    let font = FontId::monospace(FONT_SIZE);
+    ctx.fonts(|fonts| {
+        let g = fonts.layout_no_wrap("M".to_string(), font, Color32::WHITE);
+        (g.rect.width(), g.rect.height())
+    })
+}
+
+/// Render terminal in canvas space, clipped to body_rect.
+pub fn render_terminal(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    term: &Term<EventProxy>,
+    body_rect: Rect,
+) {
+    let font = FontId::monospace(FONT_SIZE);
+    let (cw, ch) = measure_cell(ctx);
+    if cw < 1.0 || ch < 1.0 { return; }
+
+    // Use painter_at to CLIP everything to the body rect — no text overflow
+    let clipped = painter.with_clip_rect(body_rect);
+
+    let content = term.renderable_content();
+    let colors = content.colors;
+
+    // Max visible cols/rows for early exit
+    let max_col = ((body_rect.width() - PAD_X) / cw) as usize + 1;
+    let max_row = ((body_rect.height() - PAD_Y) / ch) as usize + 1;
+
+    // --- Backgrounds ---
+    let mut run: Option<(Color32, f32, f32, f32)> = None;
+    for indexed in content.display_iter {
+        let col = indexed.point.column.0;
+        let line = indexed.point.line.0;
+        if line < 0 { continue; }
+        let row = line as usize;
+        if row >= max_row || col >= max_col { continue; }
+
+        let x = body_rect.min.x + PAD_X + col as f32 * cw;
+        let y = body_rect.min.y + PAD_Y + row as f32 * ch;
+
+        let cell = &indexed.cell;
+        let fl = cell.flags;
+        if fl.contains(Flags::WIDE_CHAR_SPACER) {
+            if let Some(ref mut r) = run { r.3 += cw; }
+            continue;
+        }
+        let bg = if fl.contains(Flags::INVERSE) {
+            colors::to_egui_color(cell.fg, colors)
+        } else {
+            colors::to_egui_color(cell.bg, colors)
+        };
+        let w = if fl.contains(Flags::WIDE_CHAR) { cw * 2.0 } else { cw };
+
+        if bg != DEFAULT_BG {
+            if let Some(ref mut r) = run {
+                if r.0 == bg && (r.2 - y).abs() < 0.1 && (r.1 + r.3 - x).abs() < 0.5 {
+                    r.3 += w; continue;
+                }
+                clipped.rect_filled(
+                    Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)), 0.0, r.0);
+            }
+            run = Some((bg, x, y, w));
+        } else if let Some(r) = run.take() {
+            clipped.rect_filled(
+                Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)), 0.0, r.0);
+        }
+    }
+    if let Some(r) = run.take() {
+        clipped.rect_filled(
+            Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)), 0.0, r.0);
+    }
+
+    // --- Text ---
+    let content2 = term.renderable_content();
+    for indexed in content2.display_iter {
+        let col = indexed.point.column.0;
+        let line = indexed.point.line.0;
+        if line < 0 { continue; }
+        let row = line as usize;
+        if row >= max_row || col >= max_col { continue; }
+
+        let x = body_rect.min.x + PAD_X + col as f32 * cw;
+        let y = body_rect.min.y + PAD_Y + row as f32 * ch;
+
+        let cell = &indexed.cell;
+        let fl = cell.flags;
+        if fl.contains(Flags::WIDE_CHAR_SPACER) { continue; }
+        let c = cell.c;
+        if c == ' ' || c == '\0' { continue; }
+
+        let mut fg = if fl.contains(Flags::INVERSE) {
+            colors::to_egui_color(cell.bg, colors)
+        } else {
+            colors::to_egui_color(cell.fg, colors)
+        };
+        if fl.contains(Flags::DIM) {
+            fg = Color32::from_rgb(
+                (fg.r() as f32 * 0.67) as u8,
+                (fg.g() as f32 * 0.67) as u8,
+                (fg.b() as f32 * 0.67) as u8,
+            );
+        }
+        if fl.contains(Flags::HIDDEN) {
+            fg = if fl.contains(Flags::INVERSE) {
+                colors::to_egui_color(cell.fg, colors)
+            } else {
+                colors::to_egui_color(cell.bg, colors)
+            };
+        }
+        if fl.contains(Flags::BOLD) && !fl.contains(Flags::DIM) {
+            fg = brighten(fg);
+        }
+
+        clipped.text(Pos2::new(x, y), egui::Align2::LEFT_TOP, c.to_string(), font.clone(), fg);
+    }
+
+    // --- Cursor ---
+    let cursor = content2.cursor;
+    if cursor.shape != CursorShape::Hidden && cursor.point.line.0 >= 0 {
+        let row = cursor.point.line.0 as usize;
+        let col = cursor.point.column.0;
+        if row < max_row && col < max_col {
+            let cx = body_rect.min.x + PAD_X + col as f32 * cw;
+            let cy = body_rect.min.y + PAD_Y + row as f32 * ch;
+            let cr = Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(cw, ch));
+            let cc = Color32::from_rgb(196, 223, 255);
+            match cursor.shape {
+                CursorShape::Block => {
+                    clipped.rect_filled(cr, 0.0,
+                        Color32::from_rgba_premultiplied(cc.r(), cc.g(), cc.b(), 180));
+                }
+                CursorShape::Beam => {
+                    clipped.rect_filled(
+                        Rect::from_min_size(cr.left_top(), Vec2::new(2.0, ch)), 0.0, cc);
+                }
+                CursorShape::Underline => {
+                    clipped.rect_filled(
+                        Rect::from_min_size(Pos2::new(cx, cy + ch - 2.0), Vec2::new(cw, 2.0)),
+                        0.0, cc);
+                }
+                CursorShape::HollowBlock => {
+                    clipped.rect_stroke(cr, 0.0, egui::Stroke::new(1.0, cc));
+                }
+                CursorShape::Hidden => {}
+            }
+        }
+    }
+}
+
+pub fn compute_grid_size(body_width: f32, body_height: f32) -> (u16, u16) {
+    let (cw, ch) = (12.0_f32, 25.0_f32); // approximate for 20pt
+    let cols = ((body_width - PAD_X * 2.0) / cw).floor().max(2.0) as u16;
+    let rows = ((body_height - PAD_Y * 2.0) / ch).floor().max(1.0) as u16;
+    (cols, rows)
+}
+
+fn brighten(c: Color32) -> Color32 {
+    Color32::from_rgb(
+        (c.r() as u16 * 4 / 3).min(255) as u8,
+        (c.g() as u16 * 4 / 3).min(255) as u8,
+        (c.b() as u16 * 4 / 3).min(255) as u8,
+    )
+}

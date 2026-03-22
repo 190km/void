@@ -1,0 +1,205 @@
+// PTY lifecycle: spawn, resize, read/write, cleanup
+
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::vte::ansi::Processor;
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+/// Event listener that forwards terminal events and triggers egui repaints.
+#[derive(Clone)]
+pub struct EventProxy {
+    ctx: egui::Context,
+    event_tx: std::sync::mpsc::Sender<Event>,
+}
+
+impl EventListener for EventProxy {
+    fn send_event(&self, event: Event) {
+        let _ = self.event_tx.send(event);
+        self.ctx.request_repaint();
+    }
+}
+
+/// Terminal dimensions implementing alacritty_terminal's Dimensions trait.
+pub struct TermDimensions {
+    pub cols: usize,
+    pub rows: usize,
+}
+
+impl Dimensions for TermDimensions {
+    fn total_lines(&self) -> usize {
+        self.rows
+    }
+    fn screen_lines(&self) -> usize {
+        self.rows
+    }
+    fn columns(&self) -> usize {
+        self.cols
+    }
+}
+
+/// Manages a PTY + alacritty_terminal::Term pair.
+pub struct PtyHandle {
+    pub term: Arc<Mutex<Term<EventProxy>>>,
+    pub title: Arc<Mutex<String>>,
+    pub alive: Arc<AtomicBool>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    _reader_thread: thread::JoinHandle<()>,
+}
+
+impl PtyHandle {
+    /// Spawn a new terminal with a shell process.
+    pub fn spawn(
+        ctx: &egui::Context,
+        rows: u16,
+        cols: u16,
+        title: &str,
+        cwd: Option<&std::path::Path>,
+    ) -> anyhow::Result<Self> {
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+
+        // Build shell command
+        let mut cmd = CommandBuilder::new_default_prog();
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+        cmd.env("VOID_TERMINAL", "1");
+        if let Some(dir) = cwd {
+            cmd.cwd(dir);
+        }
+
+        let _child = pair.slave.spawn_command(cmd)?;
+        drop(pair.slave);
+
+        // Create terminal state machine
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let event_proxy = EventProxy {
+            ctx: ctx.clone(),
+            event_tx,
+        };
+
+        let config = Config::default();
+        let dims = TermDimensions {
+            cols: cols as usize,
+            rows: rows as usize,
+        };
+        let term = Arc::new(Mutex::new(Term::new(config, &dims, event_proxy)));
+        let title = Arc::new(Mutex::new(title.to_string()));
+        let alive = Arc::new(AtomicBool::new(true));
+
+        // Set up I/O
+        let mut reader = pair.master.try_clone_reader()?;
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(pair.master.take_writer()?));
+
+        // Spawn reader thread
+        let term_clone = term.clone();
+        let title_clone = title.clone();
+        let alive_clone = alive.clone();
+        let writer_clone = writer.clone();
+        let ctx_clone = ctx.clone();
+
+        let reader_thread = thread::spawn(move || {
+            let mut processor: Processor = Processor::new();
+            let mut buf = [0u8; 4096];
+
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        // Feed bytes to terminal parser
+                        {
+                            let mut term = term_clone.lock().unwrap();
+                            for byte in &buf[..n] {
+                                processor.advance(&mut *term, *byte);
+                            }
+                        }
+
+                        // Process terminal events (outside of term lock)
+                        while let Ok(event) = event_rx.try_recv() {
+                            match event {
+                                Event::PtyWrite(text) => {
+                                    if let Ok(mut w) = writer_clone.lock() {
+                                        let _ = w.write_all(text.as_bytes());
+                                        let _ = w.flush();
+                                    }
+                                }
+                                Event::Title(t) => {
+                                    if let Ok(mut title) = title_clone.lock() {
+                                        *title = t;
+                                    }
+                                }
+                                Event::ResetTitle => {
+                                    if let Ok(mut title) = title_clone.lock() {
+                                        *title = "Terminal".to_string();
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        ctx_clone.request_repaint();
+                    }
+                    Err(e) => {
+                        log::debug!("PTY read error: {e}");
+                        break;
+                    }
+                }
+            }
+
+            alive_clone.store(false, Ordering::Relaxed);
+            ctx_clone.request_repaint();
+        });
+
+        Ok(Self {
+            term,
+            title,
+            alive,
+            writer,
+            master: pair.master,
+            _reader_thread: reader_thread,
+        })
+    }
+
+    /// Write bytes to the PTY (keyboard input).
+    pub fn write(&self, data: &[u8]) {
+        if let Ok(mut writer) = self.writer.lock() {
+            let _ = writer.write_all(data);
+            let _ = writer.flush();
+        }
+    }
+
+    /// Resize the PTY and terminal grid.
+    pub fn resize(&self, rows: u16, cols: u16) {
+        let _ = self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+
+        let dims = TermDimensions {
+            cols: cols as usize,
+            rows: rows as usize,
+        };
+        if let Ok(mut term) = self.term.lock() {
+            term.resize(dims);
+        }
+    }
+
+    /// Check if the child process is still alive.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
+}
