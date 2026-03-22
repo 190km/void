@@ -1,0 +1,40 @@
+# Rust
+/target/
+Cargo.lock
+**/*.rs.bk
+
+eg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*.o
+*.so
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.exe
+*.dll
+*.lib
+*.pdb
+
+# Examples/references (not part of the project)
+/eg/
+
+# Framer reference
+framer.md
+
+# Claude plans
+.claude/plans/
