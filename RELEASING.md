@@ -30,8 +30,8 @@ Update:
 
 ```bash
 git add Cargo.toml Cargo.lock
-git commit -m "release: 0.1.0"
-git tag v0.1.0
+git commit -m "release: X.Y.Z"
+git tag vX.Y.Z
 git push
 git push --tags
 ```
