@@ -1,0 +1,52 @@
+[package]
+name = "void-terminal"
+version = "0.1.0"
+edition = "2021"
+description = "Infinite canvas terminal emulator — GPU-accelerated, cross-platform"
+license = "MIT"
+repository = "https://github.com/190km/void"
+homepage = "https://void.sh"
+readme = "README.md"
+keywords = ["terminal", "gpu", "canvas", "egui", "wgpu"]
+categories = ["command-line-utilities", "gui"]
+
+[[bin]]
+name = "void"
+path = "src/main.rs"
+
+[dependencies]
+# GUI
+eframe = { version = "0.30", default-features = false, features = ["wgpu"] }
+egui = "0.30"
+
+# Terminal emulation
+alacritty_terminal = "0.24"
+portable-pty = "0.9"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Utilities
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+directories = "5"
+notify = "7"
+arboard = "3"
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1  # Slightly optimize dev builds for usable performance
+
+[package.metadata.dist]
+installers = ["shell", "powershell", "msi"]
