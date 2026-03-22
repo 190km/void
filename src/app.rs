@@ -356,16 +356,8 @@ impl eframe::App for VoidApp {
                 canvas_rect = ui.available_rect_before_wrap();
             });
 
-        let transform = self.viewport.transform(canvas_rect);
-
-        let terminal_has_scroll = {
-            let pointer = ctx.input(|i| i.pointer.hover_pos());
-            if let Some(pos) = pointer {
-                self.ws().panels.iter().any(|p| {
-                    p.focused && (transform * p.rect()).contains(pos)
-                })
-            } else { false }
-        };
+        // If any terminal is focused, scroll goes to it (not canvas pan)
+        let terminal_has_scroll = self.ws().panels.iter().any(|p| p.focused);
 
         // Canvas input (grid, pan/zoom) — drawn on a background area
         egui::Area::new(egui::Id::new("canvas_bg_area"))

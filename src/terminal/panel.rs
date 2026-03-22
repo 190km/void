@@ -228,11 +228,10 @@ impl TerminalPanel {
                 if scroll_y.abs() > 1.0 {
                     if let Ok(mut term) = pty.term.lock() {
                         // Positive scroll_y = wheel up = show older history
-                        // Each 40px of scroll delta = 1 line
                         let lines = (scroll_y / 40.0).round() as i32;
                         if lines != 0 {
-                            term.grid_mut().scroll_display(
-                                alacritty_terminal::grid::Scroll::Delta(lines));
+                            // Use term.scroll_display (not grid_mut) to also mark damage
+                            term.scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
                         }
                     }
                 }
