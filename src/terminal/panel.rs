@@ -487,6 +487,10 @@ impl TerminalPanel {
         let scrollbar_rect = Self::scrollbar_track_rect(body);
         let mut scrollbar_state = None;
         let mut local_interactions_enabled = true;
+        let hide_cursor_for_output = self
+            .pty
+            .as_ref()
+            .is_some_and(|pty| pty.should_hide_cursor_for_streaming_output());
 
         if let Some(pty) = &self.pty {
             if let Ok(term) = pty.term.lock() {
@@ -501,6 +505,7 @@ impl TerminalPanel {
                     &term,
                     content_rect,
                     self.focused,
+                    hide_cursor_for_output,
                 );
                 scrollbar_state = Some(ScrollbarState {
                     history_size: term.grid().history_size(),

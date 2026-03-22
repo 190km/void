@@ -72,6 +72,7 @@ pub fn render_terminal(
     term: &Term<EventProxy>,
     body_rect: Rect,
     focused: bool,
+    hide_cursor_for_output: bool,
 ) {
     let font = FontId::monospace(FONT_SIZE);
     let (cw, ch) = measure_cell(ctx);
@@ -214,15 +215,21 @@ pub fn render_terminal(
     // --- Cursor ---
     let cursor = content2.cursor;
     let cursor_style = term.cursor_style();
-    if should_draw_cursor(
+    let draw_cursor = should_draw_cursor(
         cursor.shape,
         cursor_style.blinking,
         focused,
+        hide_cursor_for_output,
         ctx.input(|i| i.time),
-    ) {
+    );
+    if draw_cursor {
         if cursor_style.blinking {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
+    } else if hide_cursor_for_output {
+        ctx.request_repaint_after(Duration::from_millis(250));
+    }
+    if draw_cursor {
         let Some(cursor_point) = point_to_viewport(display_offset, cursor.point) else {
             return;
         };
@@ -268,9 +275,10 @@ fn should_draw_cursor(
     shape: CursorShape,
     blinking: bool,
     focused: bool,
+    hide_cursor_for_output: bool,
     time_seconds: f64,
 ) -> bool {
-    if !focused || shape == CursorShape::Hidden {
+    if !focused || shape == CursorShape::Hidden || hide_cursor_for_output {
         return false;
     }
 
@@ -300,12 +308,17 @@ mod tests {
 
     #[test]
     fn unfocused_cursor_is_hidden() {
-        assert!(!should_draw_cursor(CursorShape::Block, false, false, 0.0));
+        assert!(!should_draw_cursor(CursorShape::Block, false, false, false, 0.0));
     }
 
     #[test]
     fn blinking_cursor_turns_off_during_hidden_phase() {
         assert!(blink_phase_visible(0.2));
         assert!(!blink_phase_visible(0.8));
+    }
+
+    #[test]
+    fn streaming_output_hides_cursor() {
+        assert!(!should_draw_cursor(CursorShape::Block, false, true, true, 0.0));
     }
 }

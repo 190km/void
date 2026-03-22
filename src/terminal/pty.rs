@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -50,6 +50,8 @@ pub struct PtyHandle {
     pub title: Arc<Mutex<String>>,
     pub alive: Arc<AtomicBool>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    last_input_at: Arc<Mutex<Instant>>,
+    last_output_at: Arc<Mutex<Instant>>,
     master: Box<dyn portable_pty::MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     _event_thread: thread::JoinHandle<()>,
@@ -102,6 +104,9 @@ impl PtyHandle {
         let term = Arc::new(Mutex::new(Term::new(config, &dims, event_proxy)));
         let title = Arc::new(Mutex::new(title.to_string()));
         let alive = Arc::new(AtomicBool::new(true));
+        let now = Instant::now();
+        let last_input_at = Arc::new(Mutex::new(now));
+        let last_output_at = Arc::new(Mutex::new(now));
 
         // Set up I/O
         let mut reader = pair.master.try_clone_reader()?;
@@ -116,6 +121,7 @@ impl PtyHandle {
         let title_clone = title.clone();
         let alive_clone_events = alive.clone();
         let ctx_clone_events = ctx.clone();
+        let last_output_clone = last_output_at.clone();
         let alive_clone_wait = alive.clone();
         let ctx_clone_wait = ctx.clone();
 
@@ -173,6 +179,9 @@ impl PtyHandle {
                             };
                             processor.advance(&mut *term, &buf[..n]);
                         }
+                        if let Ok(mut last_output) = last_output_clone.lock() {
+                            *last_output = Instant::now();
+                        }
 
                         ctx_clone.request_repaint();
                     }
@@ -198,6 +207,8 @@ impl PtyHandle {
             title,
             alive,
             writer,
+            last_input_at,
+            last_output_at,
             master: pair.master,
             killer,
             _event_thread: event_thread,
@@ -208,6 +219,9 @@ impl PtyHandle {
 
     /// Write bytes to the PTY (keyboard input).
     pub fn write(&self, data: &[u8]) {
+        if let Ok(mut last_input) = self.last_input_at.lock() {
+            *last_input = Instant::now();
+        }
         if let Ok(mut writer) = self.writer.lock() {
             let _ = writer.write_all(data);
             let _ = writer.flush();
@@ -235,6 +249,19 @@ impl PtyHandle {
     /// Check if the child process is still alive.
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
+    }
+
+    pub fn should_hide_cursor_for_streaming_output(&self) -> bool {
+        const CURSOR_HIDE_AFTER_OUTPUT: Duration = Duration::from_millis(220);
+
+        let Ok(last_output) = self.last_output_at.lock() else {
+            return false;
+        };
+        let Ok(last_input) = self.last_input_at.lock() else {
+            return false;
+        };
+
+        *last_output > *last_input && last_output.elapsed() < CURSOR_HIDE_AFTER_OUTPUT
     }
 }
 
