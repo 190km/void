@@ -28,7 +28,6 @@ pub struct TerminalPanel {
     pub id: Uuid, pub title: String, pub position: Pos2, pub size: Vec2,
     pub color: Color32, pub z_index: u32, pub focused: bool,
     pty: Option<PtyHandle>, last_cols: u16, last_rows: u16,
-    scroll_accum: f32,
     // Selection state (cell coordinates)
     selection: Option<(usize, usize, usize, usize)>, // (start_col, start_row, end_col, end_row)
     selecting: bool,
@@ -49,13 +48,13 @@ impl TerminalPanel {
         let title = cwd.and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(default_shell_title);
         let pty = PtyHandle::spawn(ctx, rows, cols, &title, cwd).map_err(|e| log::error!("Failed to spawn terminal: {e}")).ok();
         Self { id: Uuid::new_v4(), title, position, size, color, z_index: 0, focused: false, pty,
-               last_cols: cols, last_rows: rows, scroll_accum: 0.0, selection: None, selecting: false }
+               last_cols: cols, last_rows: rows, selection: None, selecting: false }
     }
 
     #[allow(dead_code)]
     pub fn new(title: impl Into<String>, position: Pos2, size: Vec2, color: Color32) -> Self {
         Self { id: Uuid::new_v4(), title: title.into(), position, size, color, z_index: 0, focused: false,
-               pty: None, last_cols: 80, last_rows: 24, scroll_accum: 0.0, selection: None, selecting: false }
+               pty: None, last_cols: 80, last_rows: 24, selection: None, selecting: false }
     }
 
     pub fn rect(&self) -> Rect { Rect::from_min_size(self.position, self.size) }
@@ -222,24 +221,18 @@ impl TerminalPanel {
             }
         }
 
-        // Scroll with accumulation — if focused, always process scroll
-        // (canvas pan is already blocked by terminal_has_scroll in app.rs)
+        // Scroll — send directly to terminal scrollback
         if self.focused {
             if let Some(pty) = &self.pty {
-                let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-                if scroll != 0.0 {
-                    self.scroll_accum += scroll;
-                    let line_height = 20.0; // approximate pixels per terminal line
-                    let lines = (self.scroll_accum / line_height) as i32;
-                    if lines != 0 {
-                        self.scroll_accum -= lines as f32 * line_height;
-                        use alacritty_terminal::grid::Dimensions;
-                        if let Ok(mut term) = pty.term.lock() {
-                            let display = term.grid().display_offset();
-                            let max = term.grid().history_size();
-                            let new = (display as i32 + lines).clamp(0, max as i32) as usize;
+                let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
+                if scroll_y.abs() > 1.0 {
+                    if let Ok(mut term) = pty.term.lock() {
+                        // Positive scroll_y = wheel up = show older history
+                        // Each 40px of scroll delta = 1 line
+                        let lines = (scroll_y / 40.0).round() as i32;
+                        if lines != 0 {
                             term.grid_mut().scroll_display(
-                                alacritty_terminal::grid::Scroll::Delta(new as i32 - display as i32));
+                                alacritty_terminal::grid::Scroll::Delta(lines));
                         }
                     }
                 }
