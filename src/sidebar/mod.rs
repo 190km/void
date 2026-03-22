@@ -103,9 +103,7 @@ impl Sidebar {
                 match self.active_tab {
                     SidebarTab::Workspaces => {
                         responses.extend(workspace_list::draw_workspace_tree(
-                            ui,
-                            workspaces,
-                            active_ws,
+                            ui, workspaces, active_ws,
                         ));
                     }
                     SidebarTab::Terminals => {
@@ -135,8 +133,10 @@ impl Sidebar {
 
     fn draw_tab_bar(&mut self, ui: &mut egui::Ui) {
         let available_width = ui.available_width();
-        let (rect, _) =
-            ui.allocate_exact_size(Vec2::new(available_width, TAB_BAR_HEIGHT), egui::Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(available_width, TAB_BAR_HEIGHT),
+            egui::Sense::hover(),
+        );
 
         let painter = ui.painter();
 
@@ -208,5 +208,4 @@ impl Sidebar {
             }
         }
     }
-
 }

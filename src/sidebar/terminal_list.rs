@@ -9,20 +9,14 @@ use crate::sidebar::{
 use crate::terminal::panel::TerminalPanel;
 
 /// Draw a flat list of terminals for the Terminals tab.
-pub fn draw_terminal_list(
-    ui: &mut egui::Ui,
-    panels: &[TerminalPanel],
-) -> Vec<SidebarResponse> {
+pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[TerminalPanel]) -> Vec<SidebarResponse> {
     let mut responses = Vec::new();
     let available_width = ui.available_width();
 
     if panels.is_empty() {
         ui.add_space(16.0);
         ui.painter().text(
-            Pos2::new(
-                ui.cursor().min.x + available_width / 2.0,
-                ui.cursor().min.y,
-            ),
+            Pos2::new(ui.cursor().min.x + available_width / 2.0, ui.cursor().min.y),
             egui::Align2::CENTER_TOP,
             "No terminals",
             egui::FontId::proportional(11.0),
@@ -76,7 +70,11 @@ pub fn draw_terminal_list(
         }
 
         // Title
-        let title_color = if is_focused { TEXT_PRIMARY } else { TEXT_SECONDARY };
+        let title_color = if is_focused {
+            TEXT_PRIMARY
+        } else {
+            TEXT_SECONDARY
+        };
         painter.text(
             Pos2::new(item_rect.left() + 26.0, item_rect.center().y),
             egui::Align2::LEFT_CENTER,
@@ -120,14 +118,9 @@ pub fn draw_terminal_list(
         Vec2::new(available_width, ITEM_HEIGHT),
         egui::Sense::hover(),
     );
-    let add_resp = ui.interact(
-        add_rect,
-        egui::Id::new("term_add"),
-        egui::Sense::click(),
-    );
+    let add_resp = ui.interact(add_rect, egui::Id::new("term_add"), egui::Sense::click());
     if add_resp.hovered() {
-        ui.painter()
-            .rect_filled(add_rect, ITEM_ROUNDING, HOVER_BG);
+        ui.painter().rect_filled(add_rect, ITEM_ROUNDING, HOVER_BG);
     }
     ui.painter().text(
         Pos2::new(add_rect.left() + 14.0, add_rect.center().y),

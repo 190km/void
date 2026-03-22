@@ -57,10 +57,17 @@ pub fn draw_minimap(
     // Hide button (top-right of minimap)
     let btn_size = Vec2::new(18.0, 18.0);
     let btn_rect = Rect::from_min_size(
-        Pos2::new(minimap_rect.max.x - btn_size.x - 4.0, minimap_rect.min.y + 4.0),
+        Pos2::new(
+            minimap_rect.max.x - btn_size.x - 4.0,
+            minimap_rect.min.y + 4.0,
+        ),
         btn_size,
     );
-    let btn_resp = ui.interact(btn_rect, egui::Id::new("minimap_hide_btn"), egui::Sense::click());
+    let btn_resp = ui.interact(
+        btn_rect,
+        egui::Id::new("minimap_hide_btn"),
+        egui::Sense::click(),
+    );
     let btn_color = if btn_resp.hovered() {
         Color32::from_rgb(160, 160, 160)
     } else {

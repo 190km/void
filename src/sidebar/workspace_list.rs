@@ -22,10 +22,7 @@ pub fn draw_workspace_tree(
 
         // ── Separator with padding ───────────────────────────────────
         ui.add_space(8.0);
-        let sep_rect = Rect::from_min_size(
-            ui.cursor().min,
-            Vec2::new(available_width, 1.0),
-        );
+        let sep_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(available_width, 1.0));
         ui.painter().rect_filled(sep_rect, 0.0, DIVIDER);
         ui.allocate_exact_size(Vec2::new(available_width, 1.0), egui::Sense::hover());
 
@@ -46,7 +43,11 @@ pub fn draw_workspace_tree(
             ws.name.clone()
         };
 
-        let name_color = if is_active { TEXT_PRIMARY } else { TEXT_SECONDARY };
+        let name_color = if is_active {
+            TEXT_PRIMARY
+        } else {
+            TEXT_SECONDARY
+        };
         painter.text(
             Pos2::new(header_rect.left() + 2.0, header_rect.center().y),
             egui::Align2::LEFT_CENTER,
@@ -89,7 +90,11 @@ pub fn draw_workspace_tree(
         if btn_resp.hovered() {
             painter.rect_filled(btn_rect, 6.0, HOVER_BG);
         }
-        let btn_color = if btn_resp.hovered() { TEXT_PRIMARY } else { TEXT_SECONDARY };
+        let btn_color = if btn_resp.hovered() {
+            TEXT_PRIMARY
+        } else {
+            TEXT_SECONDARY
+        };
         painter.text(
             btn_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -136,7 +141,11 @@ pub fn draw_workspace_tree(
                 painter.circle_filled(dot_center, 3.0, dot_color);
 
                 // Title
-                let title_color = if is_focused { TEXT_PRIMARY } else { TEXT_SECONDARY };
+                let title_color = if is_focused {
+                    TEXT_PRIMARY
+                } else {
+                    TEXT_SECONDARY
+                };
                 painter.text(
                     Pos2::new(item_rect.left() + 26.0, item_rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -182,11 +191,7 @@ pub fn draw_workspace_tree(
         Vec2::new(available_width, ITEM_HEIGHT),
         egui::Sense::hover(),
     );
-    let add_resp = ui.interact(
-        add_rect,
-        egui::Id::new("ws_create"),
-        egui::Sense::click(),
-    );
+    let add_resp = ui.interact(add_rect, egui::Id::new("ws_create"), egui::Sense::click());
     if add_resp.hovered() {
         ui.painter().rect_filled(add_rect, ITEM_ROUNDING, HOVER_BG);
     }
@@ -195,7 +200,11 @@ pub fn draw_workspace_tree(
         egui::Align2::LEFT_CENTER,
         "+ New workspace",
         egui::FontId::proportional(11.0),
-        if add_resp.hovered() { TEXT_PRIMARY } else { TEXT_MUTED },
+        if add_resp.hovered() {
+            TEXT_PRIMARY
+        } else {
+            TEXT_MUTED
+        },
     );
     if add_resp.clicked() {
         responses.push(SidebarResponse::CreateWorkspace);

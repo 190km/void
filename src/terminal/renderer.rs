@@ -308,7 +308,13 @@ mod tests {
 
     #[test]
     fn unfocused_cursor_is_hidden() {
-        assert!(!should_draw_cursor(CursorShape::Block, false, false, false, 0.0));
+        assert!(!should_draw_cursor(
+            CursorShape::Block,
+            false,
+            false,
+            false,
+            0.0
+        ));
     }
 
     #[test]
@@ -319,6 +325,12 @@ mod tests {
 
     #[test]
     fn streaming_output_hides_cursor() {
-        assert!(!should_draw_cursor(CursorShape::Block, false, true, true, 0.0));
+        assert!(!should_draw_cursor(
+            CursorShape::Block,
+            false,
+            true,
+            true,
+            0.0
+        ));
     }
 }

@@ -358,8 +358,7 @@ impl eframe::App for VoidApp {
                                 }
                             }
                             SidebarResponse::FocusPanel { panel_id } => {
-                                if let Some(p) =
-                                    self.ws().panels.iter().find(|p| p.id == panel_id)
+                                if let Some(p) = self.ws().panels.iter().find(|p| p.id == panel_id)
                                 {
                                     let center = p.rect().center();
                                     self.viewport.pan_to_center(

@@ -342,13 +342,12 @@ impl TerminalPanel {
             return;
         }
         if let Some(pty) = &self.pty {
-            let input =
-                crate::terminal::input::process_input(
-                    ctx,
-                    VOID_SHORTCUTS,
-                    self.input_mode(),
-                    self.selection.is_some(),
-                );
+            let input = crate::terminal::input::process_input(
+                ctx,
+                VOID_SHORTCUTS,
+                self.input_mode(),
+                self.selection.is_some(),
+            );
             if input.copy_selection {
                 if let Some(text) = self.selected_text() {
                     ctx.copy_text(text);
