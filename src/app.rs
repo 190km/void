@@ -543,7 +543,7 @@ impl eframe::App for VoidApp {
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                         ui.add_space(10.0);
                         ui.label(
-                            egui::RichText::new("Ctrl+Shift+T new · Ctrl+B sidebar")
+                            egui::RichText::new("Ctrl+Shift+T new · Ctrl+B sidebar · Ctrl+M minimap")
                                 .color(Color32::from_rgb(50, 50, 50))
                                 .size(9.5),
                         );
@@ -611,13 +611,17 @@ impl eframe::App for VoidApp {
                 }
 
                 if self.show_minimap {
-                    if let Some(nav) = crate::canvas::minimap::draw_minimap(
+                    let minimap = crate::canvas::minimap::draw_minimap(
                         ui,
                         &self.viewport,
                         canvas_rect,
                         &self.ws().panels,
-                    ) {
+                    );
+                    if let Some(nav) = minimap.navigate_to {
                         self.viewport.pan_to_center(nav, canvas_rect);
+                    }
+                    if minimap.hide_clicked {
+                        self.show_minimap = false;
                     }
                 }
 

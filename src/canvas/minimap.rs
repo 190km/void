@@ -10,16 +10,29 @@ const MINIMAP_PADDING: f32 = 10.0;
 const MINIMAP_BG: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 200);
 const VIEWPORT_BORDER: Color32 = Color32::from_rgb(100, 100, 100);
 
+/// Result of drawing the minimap.
+pub struct MinimapResult {
+    /// Canvas position to navigate to (if user clicked the minimap).
+    pub navigate_to: Option<Pos2>,
+    /// Whether the user clicked the hide button.
+    pub hide_clicked: bool,
+}
+
 /// Render the minimap overlay in the bottom-right corner.
-/// Returns Some(canvas_pos) if the user clicked the minimap to navigate.
+/// Returns a `MinimapResult` with navigation target and hide-button state.
 pub fn draw_minimap(
     ui: &Ui,
     viewport: &Viewport,
     screen_rect: Rect,
     panels: &[TerminalPanel],
-) -> Option<Pos2> {
+) -> MinimapResult {
+    let mut result = MinimapResult {
+        navigate_to: None,
+        hide_clicked: false,
+    };
+
     if panels.is_empty() {
-        return None;
+        return result;
     }
 
     let painter = ui.painter_at(screen_rect);
@@ -40,6 +53,29 @@ pub fn draw_minimap(
         4.0,
         egui::Stroke::new(1.0, Color32::from_rgb(40, 40, 40)),
     );
+
+    // Hide button (top-right of minimap)
+    let btn_size = Vec2::new(18.0, 18.0);
+    let btn_rect = Rect::from_min_size(
+        Pos2::new(minimap_rect.max.x - btn_size.x - 4.0, minimap_rect.min.y + 4.0),
+        btn_size,
+    );
+    let btn_resp = ui.interact(btn_rect, egui::Id::new("minimap_hide_btn"), egui::Sense::click());
+    let btn_color = if btn_resp.hovered() {
+        Color32::from_rgb(160, 160, 160)
+    } else {
+        Color32::from_rgb(70, 70, 70)
+    };
+    painter.text(
+        btn_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "✕",
+        egui::FontId::proportional(11.0),
+        btn_color,
+    );
+    if btn_resp.clicked() {
+        result.hide_clicked = true;
+    }
 
     // Compute bounding box of all panels in canvas space
     let mut bounds_min = Pos2::new(f32::MAX, f32::MAX);
@@ -66,7 +102,7 @@ pub fn draw_minimap(
 
     let canvas_range = bounds_max - bounds_min;
     if canvas_range.x <= 0.0 || canvas_range.y <= 0.0 {
-        return None;
+        return result;
     }
 
     // Fit the canvas bounds into the minimap rect with aspect ratio preserved
@@ -128,10 +164,10 @@ pub fn draw_minimap(
                 // Convert minimap position back to canvas coordinates
                 let canvas_x = (pos.x - map_offset.x) / scale + bounds_min.x;
                 let canvas_y = (pos.y - map_offset.y) / scale + bounds_min.y;
-                return Some(Pos2::new(canvas_x, canvas_y));
+                result.navigate_to = Some(Pos2::new(canvas_x, canvas_y));
             }
         }
     }
 
-    None
+    result
 }
