@@ -47,7 +47,7 @@ jobs:
             --generate-notes \
             --target "${{ github.sha }}"
 
-  # ── Build Windows + MSI installer ─────────────────────────────────
+  # ── Build Windows + NSIS installer ────────────────────────────────
   build-windows:
     needs: create-release
     runs-on: windows-latest
@@ -65,49 +65,18 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
-      - name: Build MSI installer
+      - name: Build NSIS installer
         shell: pwsh
         run: |
-          $wixBin = "${env:WIX}bin"
-          if (-not (Test-Path "$wixBin\candle.exe")) {
-            Write-Host "WiX not found at default path, installing via choco..."
-            choco install wixtoolset -y --no-progress
-            $wixBin = "C:\Program Files (x86)\WiX Toolset v3.14\bin"
-          }
+          Copy-Item "target\x86_64-pc-windows-msvc\release\void.exe" "installer\void.exe"
+          makensis /DVERSION=$env:VERSION installer\void.nsi
+          Write-Host "Installer created:"
+          Get-Item "installer\void-$env:VERSION-x86_64-setup.exe" | Select-Object Name, Length
 
-          $binaryDir = "$PWD\target\x86_64-pc-windows-msvc\release"
-
-          Write-Host "Binary: $binaryDir\void.exe"
-          Write-Host "Version: $env:VERSION"
-
-          New-Item -ItemType Directory -Path wix\build -Force | Out-Null
-
-          # Compile WXS files
-          & "$wixBin\candle.exe" `
-            "-dVersion=$env:VERSION" `
-            "-dBinaryDir=$binaryDir" `
-            -o wix\build\ `
-            wix\main.wxs `
-            wix\shortcuts.wxs
-
-          if ($LASTEXITCODE -ne 0) { throw "candle.exe failed" }
-
-          # Link into MSI
-          & "$wixBin\light.exe" `
-            wix\build\main.wixobj `
-            wix\build\shortcuts.wixobj `
-            -o "void-$env:VERSION-x86_64.msi" `
-            -spdb
-
-          if ($LASTEXITCODE -ne 0) { throw "light.exe failed" }
-
-          Write-Host "MSI created: void-$env:VERSION-x86_64.msi"
-          Get-Item "void-$env:VERSION-x86_64.msi" | Select-Object Name, Length
-
-      - name: Upload MSI to release
+      - name: Upload installer to release
         shell: bash
         run: |
-          gh release upload "$TAG" "void-${VERSION}-x86_64.msi" --clobber
+          gh release upload "$TAG" "installer/void-${VERSION}-x86_64-setup.exe" --clobber
 
   # ── Publish the release ───────────────────────────────────────────
   publish-release:
