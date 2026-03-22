@@ -135,11 +135,194 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
 
+  # ── macOS .dmg ──────────────────────────────────────────────────────
+  package-macos:
+    needs: build-local-artifacts
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            arch: x86_64
+          - target: aarch64-apple-darwin
+            arch: aarch64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download macOS binary
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-build-local-${{ matrix.target }}
+          path: dist-artifacts/
+          merge-multiple: true
+      - name: Create .app bundle and .dmg
+        shell: bash
+        run: |
+          APP="Void.app"
+          CONTENTS="$APP/Contents"
+          MACOS="$CONTENTS/MacOS"
+          RESOURCES="$CONTENTS/Resources"
+
+          mkdir -p "$MACOS" "$RESOURCES"
+
+          # Find the binary in dist artifacts
+          BINARY=$(find dist-artifacts -name "void" -type f | head -1)
+          if [ -z "$BINARY" ]; then
+            # Try extracting from tarball
+            TARBALL=$(find dist-artifacts -name "*.tar.gz" -o -name "*.tar.xz" | head -1)
+            mkdir -p extracted
+            tar xf "$TARBALL" -C extracted
+            BINARY=$(find extracted -name "void" -type f | head -1)
+          fi
+
+          cp "$BINARY" "$MACOS/void"
+          chmod +x "$MACOS/void"
+
+          # Copy icon if available
+          if [ -f assets/icon.png ]; then
+            cp assets/icon.png "$RESOURCES/icon.png"
+          fi
+
+          # Info.plist
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > "$CONTENTS/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleName</key>
+              <string>Void</string>
+              <key>CFBundleDisplayName</key>
+              <string>Void</string>
+              <key>CFBundleIdentifier</key>
+              <string>sh.void.terminal</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+              <key>CFBundleExecutable</key>
+              <string>void</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleIconFile</key>
+              <string>icon</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>LSMinimumSystemVersion</key>
+              <string>11.0</string>
+          </dict>
+          </plist>
+          PLIST
+
+          # Create .dmg
+          DMG_NAME="Void-${VERSION}-${{ matrix.arch }}.dmg"
+          mkdir -p dmg-stage
+          cp -r "$APP" dmg-stage/
+          ln -s /Applications dmg-stage/Applications
+
+          hdiutil create -volname "Void" \
+            -srcfolder dmg-stage \
+            -ov -format UDZO \
+            "$DMG_NAME"
+
+          echo "DMG_PATH=$DMG_NAME" >> "$GITHUB_ENV"
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-dmg-${{ matrix.arch }}
+          path: "*.dmg"
+
+  # ── Linux .deb ──────────────────────────────────────────────────────
+  package-linux:
+    needs: build-local-artifacts
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-build-local-${{ matrix.target }}
+          path: dist-artifacts/
+          merge-multiple: true
+      - name: Create .deb package
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG_NAME="void-terminal_${VERSION}_${{ matrix.arch }}"
+          PKG_DIR="$PKG_NAME"
+
+          mkdir -p "$PKG_DIR/DEBIAN"
+          mkdir -p "$PKG_DIR/usr/bin"
+          mkdir -p "$PKG_DIR/usr/share/applications"
+          mkdir -p "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
+
+          # Find binary
+          BINARY=$(find dist-artifacts -name "void" -type f | head -1)
+          if [ -z "$BINARY" ]; then
+            TARBALL=$(find dist-artifacts -name "*.tar.gz" -o -name "*.tar.xz" | head -1)
+            mkdir -p extracted
+            tar xf "$TARBALL" -C extracted
+            BINARY=$(find extracted -name "void" -type f | head -1)
+          fi
+
+          cp "$BINARY" "$PKG_DIR/usr/bin/void"
+          chmod +x "$PKG_DIR/usr/bin/void"
+
+          # Icon
+          if [ -f assets/icon.png ]; then
+            cp assets/icon.png "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/void.png"
+          fi
+
+          # Desktop entry
+          cat > "$PKG_DIR/usr/share/applications/void.desktop" << DESKTOP
+          [Desktop Entry]
+          Name=Void
+          Comment=Infinite Canvas Terminal
+          Exec=void
+          Icon=void
+          Terminal=false
+          Type=Application
+          Categories=System;TerminalEmulator;
+          Keywords=terminal;console;shell;canvas;
+          DESKTOP
+
+          # Control file
+          cat > "$PKG_DIR/DEBIAN/control" << CONTROL
+          Package: void-terminal
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: ${{ matrix.arch }}
+          Depends: libasound2, libx11-6, libxcursor1, libxi6, libxrandr2, libxkbcommon0, libwayland-client0
+          Maintainer: 190km <190km@void.sh>
+          Description: Infinite Canvas Terminal
+           GPU-accelerated terminal emulator with an infinite 2D canvas.
+           Place terminals anywhere with pan and zoom navigation.
+          Homepage: https://void.sh
+          CONTROL
+
+          dpkg-deb --build "$PKG_DIR"
+          echo "DEB_PATH=${PKG_NAME}.deb" >> "$GITHUB_ENV"
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-deb-${{ matrix.arch }}
+          path: "*.deb"
+
+  # ── Publish GitHub Release ──────────────────────────────────────────
   host:
     needs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
+      - package-macos
+      - package-linux
     runs-on: ubuntu-22.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -154,7 +337,7 @@ jobs:
           name: cargo-dist-bin
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
-      - name: Fetch artifacts
+      - name: Fetch all artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: artifacts-*
@@ -170,7 +353,7 @@ jobs:
         with:
           name: artifacts-dist-manifest
           path: dist-manifest.json
-      - name: Download GitHub artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: artifacts-*

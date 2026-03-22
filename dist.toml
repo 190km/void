@@ -9,7 +9,7 @@ targets = [
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
 ]
-install-path = "CARGO_HOME"
+install-path = ["$LOCALAPPDATA/Programs/Void", "~/.local/bin"]
 
 [dist.dependencies.apt]
 libasound2-dev = "*"

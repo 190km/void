@@ -117,7 +117,7 @@ impl CommandPalette {
                 ui.painter().rect_filled(
                     screen,
                     0.0,
-                    Color32::from_rgba_premultiplied(0, 0, 0, 120),
+                    Color32::from_rgba_premultiplied(0, 0, 0, 150),
                 );
                 if response.clicked() {
                     self.open = false;
@@ -129,142 +129,168 @@ impl CommandPalette {
             .order(egui::Order::Foreground)
             .fixed_pos(Pos2::new(palette_x, palette_y))
             .show(ctx, |ui| {
-                let frame_rect = Rect::from_min_size(
-                    Pos2::new(palette_x, palette_y),
-                    Vec2::new(palette_width, 400.0),
-                );
+                egui::Frame::default()
+                    .fill(Color32::from_rgb(24, 24, 28))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(55, 55, 65)))
+                    .rounding(10.0)
+                    .inner_margin(egui::Margin::same(0.0))
+                    .show(ui, |ui| {
+                        ui.set_min_width(palette_width);
+                        ui.set_max_width(palette_width);
 
-                ui.painter()
-                    .rect_filled(frame_rect, 8.0, Color32::from_rgb(20, 20, 20));
-                ui.painter().rect_stroke(
-                    frame_rect,
-                    8.0,
-                    egui::Stroke::new(0.5, Color32::from_rgb(40, 40, 40)),
-                );
+                        ui.add_space(12.0);
 
-                ui.set_min_width(palette_width);
-                ui.set_max_width(palette_width);
-
-                ui.add_space(8.0);
-
-                // Search input
-                ui.horizontal(|ui| {
-                    ui.add_space(12.0);
-                    ui.label(
-                        egui::RichText::new(">")
-                            .color(Color32::from_rgb(160, 160, 160))
-                            .size(16.0)
-                            .strong(),
-                    );
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.query)
-                            .desired_width(palette_width - 50.0)
-                            .font(egui::FontId::monospace(14.0))
-                            .text_color(Color32::from_rgb(220, 220, 220))
-                            .frame(false)
-                            .hint_text("Type a command..."),
-                    );
-                    response.request_focus();
-
-                    if response.changed() {
-                        self.update_filter();
-                    }
-                });
-
-                ui.add_space(4.0);
-
-                // Separator
-                ui.horizontal(|ui| {
-                    ui.add_space(12.0);
-                    let rect = ui.available_rect_before_wrap();
-                    ui.painter().line_segment(
-                        [
-                            Pos2::new(rect.min.x, rect.min.y),
-                            Pos2::new(rect.min.x + palette_width - 24.0, rect.min.y),
-                        ],
-                        egui::Stroke::new(1.0, Color32::from_rgb(50, 50, 50)),
-                    );
-                });
-
-                ui.add_space(4.0);
-
-                // Command list (scrollable)
-                let max_visible = 10;
-                let items_to_show = self.filtered.len().min(max_visible);
-
-                for (display_idx, &cmd_idx) in self.filtered.iter().take(items_to_show).enumerate()
-                {
-                    let entry = &COMMANDS[cmd_idx];
-                    let is_selected = display_idx == self.selected_index;
-
-                    let bg_color = if is_selected {
-                        Color32::from_rgb(40, 40, 50)
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-
-                    let item_rect = Rect::from_min_size(
-                        Pos2::new(palette_x + 4.0, ui.cursor().min.y),
-                        Vec2::new(palette_width - 8.0, 28.0),
-                    );
-
-                    if is_selected {
-                        ui.painter().rect_filled(item_rect, 4.0, bg_color);
-                    }
-
-                    let _response = ui.horizontal(|ui| {
-                        ui.add_space(16.0);
-
-                        // Command label
-                        ui.label(
-                            egui::RichText::new(entry.label)
-                                .color(if is_selected {
-                                    Color32::WHITE
-                                } else {
-                                    Color32::from_rgb(200, 200, 200)
-                                })
-                                .size(13.0),
-                        );
-
-                        // Right-align shortcut
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Search input row
+                        ui.horizontal(|ui| {
                             ui.add_space(16.0);
                             ui.label(
-                                egui::RichText::new(entry.shortcut)
-                                    .color(Color32::from_rgb(100, 100, 100))
-                                    .size(11.0),
+                                egui::RichText::new(">")
+                                    .color(Color32::from_rgb(130, 130, 200))
+                                    .size(16.0)
+                                    .strong(),
                             );
+                            ui.add_space(4.0);
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut self.query)
+                                    .desired_width(palette_width - 60.0)
+                                    .font(egui::FontId::monospace(14.0))
+                                    .text_color(Color32::from_rgb(220, 220, 225))
+                                    .frame(false)
+                                    .hint_text("Type a command..."),
+                            );
+                            response.request_focus();
+
+                            if response.changed() {
+                                self.update_filter();
+                            }
                         });
-                    });
 
-                    // Click to execute
-                    let click_response = ui.interact(
-                        item_rect,
-                        egui::Id::new("cmd_item").with(cmd_idx),
-                        egui::Sense::click(),
-                    );
-                    if click_response.clicked() {
-                        executed_command = Some(entry.command);
-                    }
-                    if click_response.hovered() {
-                        self.selected_index = display_idx;
-                    }
-                }
+                        ui.add_space(8.0);
 
-                if self.filtered.is_empty() {
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(16.0);
-                        ui.label(
-                            egui::RichText::new("No matching commands")
-                                .color(Color32::from_rgb(100, 100, 100))
-                                .size(13.0)
-                                .italics(),
+                        // Separator
+                        let sep_rect = ui.available_rect_before_wrap();
+                        ui.painter().line_segment(
+                            [
+                                Pos2::new(sep_rect.min.x, sep_rect.min.y),
+                                Pos2::new(sep_rect.min.x + palette_width, sep_rect.min.y),
+                            ],
+                            egui::Stroke::new(1.0, Color32::from_rgb(45, 45, 52)),
                         );
-                    });
-                }
 
-                ui.add_space(8.0);
+                        ui.add_space(6.0);
+
+                        // Command list
+                        let max_visible = 10;
+                        let items_to_show = self.filtered.len().min(max_visible);
+                        let row_height = 32.0;
+
+                        for (display_idx, &cmd_idx) in
+                            self.filtered.iter().take(items_to_show).enumerate()
+                        {
+                            let entry = &COMMANDS[cmd_idx];
+                            let is_selected = display_idx == self.selected_index;
+
+                            let (row_rect, row_response) = ui.allocate_exact_size(
+                                Vec2::new(palette_width, row_height),
+                                egui::Sense::click(),
+                            );
+
+                            // Selection highlight
+                            if is_selected || row_response.hovered() {
+                                let hl = Rect::from_min_max(
+                                    Pos2::new(row_rect.min.x + 6.0, row_rect.min.y + 1.0),
+                                    Pos2::new(row_rect.max.x - 6.0, row_rect.max.y - 1.0),
+                                );
+                                ui.painter().rect_filled(
+                                    hl,
+                                    6.0,
+                                    if is_selected {
+                                        Color32::from_rgb(45, 45, 62)
+                                    } else {
+                                        Color32::from_rgb(35, 35, 45)
+                                    },
+                                );
+                            }
+
+                            // Label — left aligned, vertically centered
+                            ui.painter().text(
+                                Pos2::new(row_rect.min.x + 20.0, row_rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                entry.label,
+                                egui::FontId::proportional(13.0),
+                                if is_selected {
+                                    Color32::WHITE
+                                } else {
+                                    Color32::from_rgb(195, 195, 200)
+                                },
+                            );
+
+                            // Shortcut badge — right aligned, vertically centered
+                            if !entry.shortcut.is_empty() {
+                                let shortcut_font = egui::FontId::monospace(10.5);
+                                let shortcut_galley = ui.painter().layout_no_wrap(
+                                    entry.shortcut.to_string(),
+                                    shortcut_font.clone(),
+                                    Color32::from_rgb(120, 120, 135),
+                                );
+                                let text_w = shortcut_galley.rect.width();
+                                let text_h = shortcut_galley.rect.height();
+                                let badge_pad_x = 7.0;
+                                let badge_pad_y = 3.0;
+                                let badge_rect = Rect::from_min_size(
+                                    Pos2::new(
+                                        row_rect.max.x - 18.0 - text_w - badge_pad_x * 2.0,
+                                        row_rect.center().y - (text_h + badge_pad_y * 2.0) / 2.0,
+                                    ),
+                                    Vec2::new(
+                                        text_w + badge_pad_x * 2.0,
+                                        text_h + badge_pad_y * 2.0,
+                                    ),
+                                );
+                                ui.painter().rect_filled(
+                                    badge_rect,
+                                    4.0,
+                                    Color32::from_rgb(35, 35, 42),
+                                );
+                                ui.painter().rect_stroke(
+                                    badge_rect,
+                                    4.0,
+                                    egui::Stroke::new(0.5, Color32::from_rgb(60, 60, 70)),
+                                );
+                                ui.painter().galley(
+                                    Pos2::new(
+                                        badge_rect.min.x + badge_pad_x,
+                                        badge_rect.min.y + badge_pad_y,
+                                    ),
+                                    shortcut_galley,
+                                    Color32::TRANSPARENT,
+                                );
+                            }
+
+                            if row_response.clicked() {
+                                executed_command = Some(entry.command);
+                            }
+                            if row_response.hovered() {
+                                self.selected_index = display_idx;
+                            }
+                        }
+
+                        if self.filtered.is_empty() {
+                            let (empty_rect, _) = ui.allocate_exact_size(
+                                Vec2::new(palette_width, 36.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().text(
+                                Pos2::new(empty_rect.min.x + 20.0, empty_rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                "No matching commands",
+                                egui::FontId::proportional(13.0),
+                                Color32::from_rgb(100, 100, 110),
+                            );
+                        }
+
+                        ui.add_space(6.0);
+                    });
             });
 
         if executed_command.is_some() {

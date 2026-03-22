@@ -2,10 +2,10 @@
 
 ![Void](assets/banner.png)
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+<!--[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021_edition-orange)](https://www.rust-lang.org)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen)](#)
-[![GPU](https://img.shields.io/badge/gpu-wgpu_(Vulkan%2FMetal%2FDX12)-blueviolet)](#)
+[![GPU](https://img.shields.io/badge/gpu-wgpu_(Vulkan%2FMetal%2FDX12)-blueviolet)](#)-->
 
 [Void](https://void.sh) is an infinite canvas terminal emulator — GPU-accelerated, cross-platform. No tabs, no splits, no tiling — just an infinite 2D surface where you place terminals anywhere with pan and zoom navigation.
 
@@ -18,50 +18,9 @@
 
 ## Getting Started
 
-1. Clone the repository
-
-```bash
-git clone https://github.com/190km/void.git
-```
-
-2. Navigate into the project directory
-
-```bash
-cd void
-```
-
-3. Make sure you have the Rust toolchain installed ([rustup.rs](https://rustup.rs))
-
-4. Run the application
-
-```bash
-cargo run
-```
-
-That's it! Void will compile and launch with a default terminal on the canvas.
+Download the latest binary for your platform from the [Releases](https://github.com/190km/void/releases) page — no build step required.
 
 > Built **entirely in Rust**. Zero web technologies. No Electron, no WebView, no JavaScript runtime. Native performance via wgpu.
-
-<details>
-<summary><strong>Windows — MinGW-w64 setup</strong></summary>
-
-```powershell
-# ensure MinGW-w64 is on PATH
-$env:PATH = "C:\msys64\mingw64\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
-cargo run
-```
-
-</details>
-
-<details>
-<summary><strong>Release build (optimized)</strong></summary>
-
-```bash
-cargo build --release
-# binary at target/release/void
-```
-
-</details>
 
 ## How It Works
 
@@ -149,11 +108,24 @@ See [STATUS.md](STATUS.md) for detailed progress and [PRD.md](PRD.md) for the fu
 
 Void is open source and contributions are welcome.
 
-```bash
-# run in dev mode
-cargo run
+1. Clone the repository
 
-# check before submitting
+```bash
+git clone https://github.com/190km/void.git
+cd void
+```
+
+2. Make sure you have the Rust toolchain installed ([rustup.rs](https://rustup.rs))
+
+3. Run in dev mode and hack away
+
+```bash
+cargo run
+```
+
+4. Check before submitting
+
+```bash
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 cargo test
