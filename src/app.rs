@@ -222,8 +222,9 @@ impl eframe::App for VoidApp {
                     ui.label(egui::RichText::new("void").color(Color32::from_rgb(140, 140, 140)).size(11.0));
                     ui.add_space(14.0);
 
-                    // Workspaces
+                    // Workspaces + terminals dropdown
                     let mut ws_action = None;
+                    let mut should_spawn_terminal = false;
                     {
                         use crate::sidebar::workspace_list::WorkspaceAction;
 
@@ -241,15 +242,23 @@ impl eframe::App for VoidApp {
                         });
                         ui.add_space(4.0);
 
+                        let mut clicked_panel: Option<(usize, uuid::Uuid)> = None;
+                        let mut should_spawn_terminal = false;
+
                         for (i, (name, active)) in names.iter().enumerate() {
                             let tc = if *active { Color32::WHITE } else { Color32::from_rgb(120, 120, 120) };
+
+                            // Workspace row
                             let resp = ui.horizontal(|ui| {
                                 ui.set_min_height(22.0);
+                                // Arrow indicator (expanded for active)
+                                let arrow = if *active { "▾" } else { "▸" };
+                                ui.label(egui::RichText::new(arrow).color(Color32::from_rgb(60, 60, 60)).size(9.0));
+                                // Color dot
                                 let (dr, _) = ui.allocate_exact_size(egui::Vec2::splat(6.0), egui::Sense::hover());
                                 let dc = if *active { Color32::from_rgb(90, 130, 200) } else { Color32::from_rgb(50, 50, 50) };
                                 ui.painter().circle_filled(dr.center(), 2.5, dc);
                                 ui.add_space(2.0);
-                                // Show cwd hint
                                 let label = if let Some(cwd) = &self.workspaces[i].cwd {
                                     format!("{}", cwd.file_name().map(|n| n.to_string_lossy()).unwrap_or(std::borrow::Cow::Borrowed(name)))
                                 } else { name.clone() };
@@ -262,6 +271,49 @@ impl eframe::App for VoidApp {
                                     if ui.button("Delete").clicked() { ws_action = Some(WorkspaceAction::Delete(i)); ui.close_menu(); }
                                 }
                             });
+
+                            // Dropdown: terminals for this workspace (only shown for active)
+                            if *active {
+                                for panel in &self.workspaces[i].panels {
+                                    let ptc = if panel.focused { Color32::WHITE } else { Color32::from_rgb(100, 100, 100) };
+                                    let pr = ui.horizontal(|ui| {
+                                        ui.set_min_height(20.0);
+                                        ui.add_space(18.0); // indent
+                                        let (dr, _) = ui.allocate_exact_size(egui::Vec2::splat(5.0), egui::Sense::hover());
+                                        let dot_c = if panel.is_alive() { panel.color.linear_multiply(0.6) } else { Color32::from_rgb(40, 40, 40) };
+                                        ui.painter().circle_filled(dr.center(), 2.0, dot_c);
+                                        ui.add_space(2.0);
+                                        ui.add(egui::Label::new(egui::RichText::new(&panel.title).color(ptc).size(10.0))
+                                            .selectable(false).sense(egui::Sense::click()).truncate())
+                                    });
+                                    if pr.inner.clicked() {
+                                        clicked_panel = Some((i, panel.id));
+                                    }
+                                }
+                                // + New terminal under this workspace
+                                let nr = ui.horizontal(|ui| {
+                                    ui.set_min_height(20.0);
+                                    ui.add_space(18.0);
+                                    ui.add(egui::Label::new(egui::RichText::new("+ terminal").color(Color32::from_rgb(60, 60, 60)).size(10.0))
+                                        .selectable(false).sense(egui::Sense::click()))
+                                });
+                                if nr.inner.clicked() { should_spawn_terminal = true; }
+                            }
+
+                            ui.add_space(2.0);
+                        }
+
+                        // Handle panel click (pan to it)
+                        if let Some((_ws_idx, panel_id)) = clicked_panel {
+                            if let Some(p) = self.ws().panels.iter().find(|p| p.id == panel_id) {
+                                let center = p.rect().center();
+                                let sr = ctx.screen_rect();
+                                self.viewport.pan_to_center(center, egui::Rect::from_min_max(
+                                    egui::Pos2::new(sr.min.x + 260.0, sr.min.y), sr.max));
+                            }
+                            if let Some(idx) = self.ws().panels.iter().position(|p| p.id == panel_id) {
+                                self.ws_mut().bring_to_front(idx);
+                            }
                         }
                     }
 
@@ -282,32 +334,7 @@ impl eframe::App for VoidApp {
                             }
                         }
                     }
-
-                    ui.add_space(10.0);
-
-                    // Terminals
-                    let clicked_id = crate::sidebar::session_list::draw_session_list(ui, &self.ws().panels);
-                    if let Some(panel_id) = clicked_id {
-                        if let Some(p) = self.ws().panels.iter().find(|p| p.id == panel_id) {
-                            let center = p.rect().center();
-                            let sr = ctx.screen_rect();
-                            self.viewport.pan_to_center(center, egui::Rect::from_min_max(
-                                egui::Pos2::new(sr.min.x + 260.0, sr.min.y), sr.max));
-                        }
-                        if let Some(idx) = self.ws().panels.iter().position(|p| p.id == panel_id) {
-                            self.ws_mut().bring_to_front(idx);
-                        }
-                    }
-
-                    ui.add_space(10.0);
-
-                    // New terminal
-                    let r = ui.horizontal(|ui| {
-                        ui.set_min_height(22.0);
-                        ui.add(egui::Label::new(egui::RichText::new("+ New terminal").color(Color32::from_rgb(100,100,100)).size(11.0))
-                            .selectable(false).sense(egui::Sense::click()))
-                    });
-                    if r.inner.clicked() { self.spawn_terminal(); }
+                    if should_spawn_terminal { self.spawn_terminal(); }
 
                     // Bottom
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
