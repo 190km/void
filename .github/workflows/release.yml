@@ -3,13 +3,22 @@ name: Release
 on:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
 permissions:
   contents: write
 
 jobs:
   # ── Create draft release ──────────────────────────────────────────
   create-release:
-    runs-on: ubuntu-22.04
+    name: Create Release
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -22,11 +31,12 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Version: $VERSION → tag: v$VERSION"
+          echo "## Release" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version: \`$VERSION\` → Tag: \`v$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail if tag already exists
         run: |
-          TAG="v$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')"
+          TAG="${{ steps.version.outputs.tag }}"
           if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
             echo "::error::Tag $TAG already exists. Bump the version in Cargo.toml first."
             exit 1
@@ -49,8 +59,10 @@ jobs:
 
   # ── Build Windows + NSIS installer ────────────────────────────────
   build-windows:
+    name: Build (Windows x64)
     needs: create-release
     runs-on: windows-latest
+    timeout-minutes: 30
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.create-release.outputs.version }}
@@ -61,6 +73,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-release
 
       - name: Build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
@@ -80,10 +96,11 @@ jobs:
 
   # ── Publish the release ───────────────────────────────────────────
   publish-release:
+    name: Publish Release
     needs:
       - create-release
       - build-windows
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
