@@ -1,8 +1,8 @@
 // Minimap widget: small overlay showing all panels and current viewport
 
-use egui::{Color32, Pos2, Rect, Vec2, Ui};
 use crate::canvas::viewport::Viewport;
 use crate::terminal::panel::TerminalPanel;
+use egui::{Color32, Pos2, Rect, Ui, Vec2};
 
 const MINIMAP_WIDTH: f32 = 200.0;
 const MINIMAP_HEIGHT: f32 = 150.0;
@@ -35,7 +35,11 @@ pub fn draw_minimap(
 
     // Background
     painter.rect_filled(minimap_rect, 4.0, MINIMAP_BG);
-    painter.rect_stroke(minimap_rect, 4.0, egui::Stroke::new(1.0, Color32::from_rgb(40, 40, 40)));
+    painter.rect_stroke(
+        minimap_rect,
+        4.0,
+        egui::Stroke::new(1.0, Color32::from_rgb(40, 40, 40)),
+    );
 
     // Compute bounding box of all panels in canvas space
     let mut bounds_min = Pos2::new(f32::MAX, f32::MAX);
@@ -99,11 +103,7 @@ pub fn draw_minimap(
     let vp_min = canvas_to_minimap(visible.min);
     let vp_max = canvas_to_minimap(visible.max);
     let vp_rect = Rect::from_min_max(vp_min, vp_max);
-    painter.rect_stroke(
-        vp_rect,
-        1.0,
-        egui::Stroke::new(1.5, VIEWPORT_BORDER),
-    );
+    painter.rect_stroke(vp_rect, 1.0, egui::Stroke::new(1.5, VIEWPORT_BORDER));
 
     // Zoom label
     let zoom_text = format!("{:.0}%", viewport.zoom * 100.0);

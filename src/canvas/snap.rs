@@ -22,7 +22,10 @@ pub struct SnapResult {
 /// `delta` = raw drag delta in canvas space.
 pub fn snap_drag(moving: Rect, others: &[Rect], delta: Vec2) -> SnapResult {
     if others.is_empty() {
-        return SnapResult { delta, guides: Vec::new() };
+        return SnapResult {
+            delta,
+            guides: Vec::new(),
+        };
     }
 
     let proposed = moving.translate(delta);
@@ -42,9 +45,12 @@ pub fn snap_drag(moving: Rect, others: &[Rect], delta: Vec2) -> SnapResult {
             for &ox in &other_xs {
                 let dist = (ox - mx).abs();
                 if dist < SNAP_THRESHOLD {
-                    let better = snap_dx.map_or(true, |(_, best)| (ox - mx).abs() < (best - mx + snap_dx.unwrap().0).abs());
+                    let adjustment = ox - mx;
+                    let better = snap_dx.is_none_or(|(best_adjustment, _)| {
+                        adjustment.abs() < best_adjustment.abs()
+                    });
                     if better {
-                        snap_dx = Some((ox - mx, ox));
+                        snap_dx = Some((adjustment, ox));
                     }
                 }
             }
@@ -55,9 +61,12 @@ pub fn snap_drag(moving: Rect, others: &[Rect], delta: Vec2) -> SnapResult {
             for &oy in &other_ys {
                 let dist = (oy - my).abs();
                 if dist < SNAP_THRESHOLD {
-                    let better = snap_dy.map_or(true, |(_, best)| (oy - my).abs() < (best - my + snap_dy.unwrap().0).abs());
+                    let adjustment = oy - my;
+                    let better = snap_dy.is_none_or(|(best_adjustment, _)| {
+                        adjustment.abs() < best_adjustment.abs()
+                    });
                     if better {
-                        snap_dy = Some((oy - my, oy));
+                        snap_dy = Some((adjustment, oy));
                     }
                 }
             }
@@ -109,5 +118,28 @@ pub fn snap_drag(moving: Rect, others: &[Rect], delta: Vec2) -> SnapResult {
         });
     }
 
-    SnapResult { delta: adjusted_delta, guides }
+    SnapResult {
+        delta: adjusted_delta,
+        guides,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::Pos2;
+
+    #[test]
+    fn picks_the_closest_snap_candidate() {
+        let moving = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
+        let others = [
+            Rect::from_min_max(Pos2::new(6.0, 20.0), Pos2::new(106.0, 120.0)),
+            Rect::from_min_max(Pos2::new(3.0, 4.0), Pos2::new(103.0, 104.0)),
+        ];
+
+        let result = snap_drag(moving, &others, Vec2::ZERO);
+
+        assert_eq!(result.delta, Vec2::new(3.0, 4.0));
+        assert_eq!(result.guides.len(), 2);
+    }
 }

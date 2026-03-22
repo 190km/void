@@ -176,8 +176,8 @@ fn ctrl_key_byte(key: &Key) -> Option<u8> {
         Key::X => Some(0x18),
         Key::Y => Some(0x19),
         Key::Z => Some(0x1A),
-        Key::OpenBracket => Some(0x1B), // Ctrl+[ = ESC
-        Key::Backslash => Some(0x1C),   // Ctrl+\ = FS
+        Key::OpenBracket => Some(0x1B),  // Ctrl+[ = ESC
+        Key::Backslash => Some(0x1C),    // Ctrl+\ = FS
         Key::CloseBracket => Some(0x1D), // Ctrl+] = GS
         _ => None,
     }

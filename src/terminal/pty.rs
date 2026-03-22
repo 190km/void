@@ -9,7 +9,7 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::Processor;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 
 /// Event listener that forwards terminal events and triggers egui repaints.
 #[derive(Clone)]
@@ -50,7 +50,9 @@ pub struct PtyHandle {
     pub alive: Arc<AtomicBool>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn portable_pty::MasterPty + Send>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
     _reader_thread: thread::JoinHandle<()>,
+    _waiter_thread: thread::JoinHandle<()>,
 }
 
 impl PtyHandle {
@@ -79,7 +81,8 @@ impl PtyHandle {
             cmd.cwd(dir);
         }
 
-        let _child = pair.slave.spawn_command(cmd)?;
+        let mut child = pair.slave.spawn_command(cmd)?;
+        let killer = child.clone_killer();
         drop(pair.slave);
 
         // Create terminal state machine
@@ -109,6 +112,8 @@ impl PtyHandle {
         let alive_clone = alive.clone();
         let writer_clone = writer.clone();
         let ctx_clone = ctx.clone();
+        let alive_clone_wait = alive.clone();
+        let ctx_clone_wait = ctx.clone();
 
         let reader_thread = thread::spawn(move || {
             let mut processor: Processor = Processor::new();
@@ -119,11 +124,11 @@ impl PtyHandle {
                     Ok(0) => break,
                     Ok(n) => {
                         // Feed bytes to terminal parser
-                        {
-                            let mut term = term_clone.lock().unwrap();
-                            for byte in &buf[..n] {
-                                processor.advance(&mut *term, *byte);
-                            }
+                        let Ok(mut term) = term_clone.lock() else {
+                            break;
+                        };
+                        for byte in &buf[..n] {
+                            processor.advance(&mut *term, *byte);
                         }
 
                         // Process terminal events (outside of term lock)
@@ -162,13 +167,21 @@ impl PtyHandle {
             ctx_clone.request_repaint();
         });
 
+        let waiter_thread = thread::spawn(move || {
+            let _ = child.wait();
+            alive_clone_wait.store(false, Ordering::Relaxed);
+            ctx_clone_wait.request_repaint();
+        });
+
         Ok(Self {
             term,
             title,
             alive,
             writer,
             master: pair.master,
+            killer,
             _reader_thread: reader_thread,
+            _waiter_thread: waiter_thread,
         })
     }
 
@@ -201,5 +214,12 @@ impl PtyHandle {
     /// Check if the child process is still alive.
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for PtyHandle {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Relaxed);
+        let _ = self.killer.kill();
     }
 }

@@ -75,19 +75,15 @@ impl CommandPalette {
             if input.key_pressed(Key::Escape) {
                 close = true;
             }
-            if input.key_pressed(Key::ArrowDown) {
-                if !self.filtered.is_empty() {
-                    self.selected_index = (self.selected_index + 1) % self.filtered.len();
-                }
+            if input.key_pressed(Key::ArrowDown) && !self.filtered.is_empty() {
+                self.selected_index = (self.selected_index + 1) % self.filtered.len();
             }
-            if input.key_pressed(Key::ArrowUp) {
-                if !self.filtered.is_empty() {
-                    self.selected_index = if self.selected_index == 0 {
-                        self.filtered.len() - 1
-                    } else {
-                        self.selected_index - 1
-                    };
-                }
+            if input.key_pressed(Key::ArrowUp) && !self.filtered.is_empty() {
+                self.selected_index = if self.selected_index == 0 {
+                    self.filtered.len() - 1
+                } else {
+                    self.selected_index - 1
+                };
             }
             if input.key_pressed(Key::Enter) {
                 if let Some(&cmd_idx) = self.filtered.get(self.selected_index) {
@@ -118,8 +114,11 @@ impl CommandPalette {
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
                 let response = ui.allocate_response(screen.size(), egui::Sense::click());
-                ui.painter()
-                    .rect_filled(screen, 0.0, Color32::from_rgba_premultiplied(0, 0, 0, 120));
+                ui.painter().rect_filled(
+                    screen,
+                    0.0,
+                    Color32::from_rgba_premultiplied(0, 0, 0, 120),
+                );
                 if response.clicked() {
                     self.open = false;
                 }
@@ -135,9 +134,13 @@ impl CommandPalette {
                     Vec2::new(palette_width, 400.0),
                 );
 
-                ui.painter().rect_filled(frame_rect, 8.0, Color32::from_rgb(20, 20, 20));
-                ui.painter().rect_stroke(frame_rect, 8.0,
-                    egui::Stroke::new(0.5, Color32::from_rgb(40, 40, 40)));
+                ui.painter()
+                    .rect_filled(frame_rect, 8.0, Color32::from_rgb(20, 20, 20));
+                ui.painter().rect_stroke(
+                    frame_rect,
+                    8.0,
+                    egui::Stroke::new(0.5, Color32::from_rgb(40, 40, 40)),
+                );
 
                 ui.set_min_width(palette_width);
                 ui.set_max_width(palette_width);
@@ -189,8 +192,7 @@ impl CommandPalette {
                 let max_visible = 10;
                 let items_to_show = self.filtered.len().min(max_visible);
 
-                for (display_idx, &cmd_idx) in
-                    self.filtered.iter().take(items_to_show).enumerate()
+                for (display_idx, &cmd_idx) in self.filtered.iter().take(items_to_show).enumerate()
                 {
                     let entry = &COMMANDS[cmd_idx];
                     let is_selected = display_idx == self.selected_index;

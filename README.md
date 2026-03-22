@@ -146,14 +146,16 @@ Void is open source and contributions are welcome.
 cargo run
 
 # check before submitting
-cargo clippy
+cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
+cargo test
 ```
+
+See [RELEASING.md](RELEASING.md) for the Linux, macOS, and Windows release flow.
 
 If you find a bug or have a feature request, [open an issue](https://github.com/190km/void/issues).
 
 ## License
 
 [MIT](LICENSE) — 190km
-
 

@@ -6,6 +6,7 @@ description = "Infinite canvas terminal emulator — GPU-accelerated, cross-plat
 license = "MIT"
 repository = "https://github.com/190km/void"
 homepage = "https://void.sh"
+authors = ["190km"]
 readme = "README.md"
 keywords = ["terminal", "gpu", "canvas", "egui", "wgpu"]
 categories = ["command-line-utilities", "gui"]
@@ -16,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 # GUI
-eframe = { version = "0.30", default-features = false, features = ["wgpu"] }
+eframe = { version = "0.30", default-features = false, features = ["wgpu", "wayland", "x11"] }
 egui = "0.30"
 
 # Terminal emulation
@@ -45,8 +46,9 @@ lto = true
 codegen-units = 1
 strip = true
 
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 [profile.dev]
 opt-level = 1  # Slightly optimize dev builds for usable performance
-
-[package.metadata.dist]
-installers = ["shell", "powershell", "msi"]

@@ -1,7 +1,7 @@
 // Background dot grid
 
-use egui::{Color32, Pos2, Rect, Ui};
 use super::viewport::Viewport;
+use egui::{Color32, Pos2, Rect, Ui};
 
 const GRID_SPACING: f32 = 40.0;
 const DOT_RADIUS: f32 = 0.8;
@@ -17,7 +17,9 @@ pub fn draw_dot_grid(ui: &Ui, viewport: &Viewport, screen_rect: Rect) {
     let end_y = (visible.max.y / GRID_SPACING).ceil() as i32;
 
     let count = ((end_x - start_x) as i64) * ((end_y - start_y) as i64);
-    if count > 15_000 { return; }
+    if count > 15_000 {
+        return;
+    }
 
     let dot_size = (DOT_RADIUS * viewport.zoom).clamp(0.3, 2.0);
 

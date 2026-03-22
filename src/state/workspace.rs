@@ -1,7 +1,7 @@
 // Workspace — each workspace is an independent canvas with its own terminals
 
-use std::path::PathBuf;
 use egui::Vec2;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::terminal::panel::TerminalPanel;
@@ -34,7 +34,9 @@ impl Workspace {
     }
 
     pub fn bring_to_front(&mut self, index: usize) {
-        for p in &mut self.panels { p.focused = false; }
+        for p in &mut self.panels {
+            p.focused = false;
+        }
         self.panels[index].focused = true;
         self.panels[index].z_index = self.next_z;
         self.next_z += 1;
@@ -50,10 +52,13 @@ impl Workspace {
         let position = egui::Pos2::new(50.0 + col * 1060.0, 50.0 + row * 660.0);
 
         // Unfocus all existing panels FIRST
-        for p in &mut self.panels { p.focused = false; }
+        for p in &mut self.panels {
+            p.focused = false;
+        }
 
         let mut panel = TerminalPanel::new_with_terminal(
-            ctx, position,
+            ctx,
+            position,
             Vec2::new(1000.0, 600.0),
             color,
             self.cwd.as_deref(),
@@ -70,7 +75,9 @@ impl Workspace {
             let was_focused = self.panels[idx].focused;
             self.panels.remove(idx);
             if was_focused {
-                if let Some(last) = self.panels.last_mut() { last.focused = true; }
+                if let Some(last) = self.panels.last_mut() {
+                    last.focused = true;
+                }
             }
         }
     }
@@ -82,16 +89,24 @@ impl Workspace {
     }
 
     pub fn focus_next(&mut self) {
-        if self.panels.is_empty() { return; }
+        if self.panels.is_empty() {
+            return;
+        }
         let cur = self.panels.iter().position(|p| p.focused).unwrap_or(0);
         let next = (cur + 1) % self.panels.len();
         self.bring_to_front(next);
     }
 
     pub fn focus_prev(&mut self) {
-        if self.panels.is_empty() { return; }
+        if self.panels.is_empty() {
+            return;
+        }
         let cur = self.panels.iter().position(|p| p.focused).unwrap_or(0);
-        let prev = if cur == 0 { self.panels.len() - 1 } else { cur - 1 };
+        let prev = if cur == 0 {
+            self.panels.len() - 1
+        } else {
+            cur - 1
+        };
         self.bring_to_front(prev);
     }
 }

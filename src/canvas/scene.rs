@@ -1,11 +1,16 @@
 // Canvas input: pan + zoom (inspired by Horizon's approach)
 
-use egui::{self, Ui};
 use super::viewport::Viewport;
+use egui::{self, Ui};
 
 /// Handle canvas pan/zoom input.
 /// `terminal_hovered` = true when the pointer is over a terminal, so wheel input should not pan the canvas.
-pub fn handle_canvas_input(ui: &Ui, viewport: &mut Viewport, screen_rect: egui::Rect, terminal_hovered: bool) {
+pub fn handle_canvas_input(
+    ui: &Ui,
+    viewport: &mut Viewport,
+    screen_rect: egui::Rect,
+    terminal_hovered: bool,
+) {
     let ctx = ui.ctx();
 
     ctx.input(|input| {

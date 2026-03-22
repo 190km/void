@@ -10,7 +10,10 @@ pub struct Viewport {
 
 impl Default for Viewport {
     fn default() -> Self {
-        Self { pan: Vec2::ZERO, zoom: 1.0 }
+        Self {
+            pan: Vec2::ZERO,
+            zoom: 1.0,
+        }
     }
 }
 
@@ -67,5 +70,38 @@ impl Viewport {
             self.canvas_to_screen(rect.min, screen_rect),
             self.canvas_to_screen(rect.max, screen_rect),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pan_to_center_places_canvas_point_at_screen_center() {
+        let mut viewport = Viewport {
+            pan: Vec2::ZERO,
+            zoom: 1.5,
+        };
+        let screen_rect = Rect::from_min_max(Pos2::new(260.0, 40.0), Pos2::new(1260.0, 840.0));
+        let canvas_pos = Pos2::new(320.0, 180.0);
+
+        viewport.pan_to_center(canvas_pos, screen_rect);
+
+        let screen_pos = viewport.canvas_to_screen(canvas_pos, screen_rect);
+        assert_eq!(screen_pos, screen_rect.center());
+    }
+
+    #[test]
+    fn zoom_around_keeps_anchor_position_stable() {
+        let mut viewport = Viewport::default();
+        let screen_rect = Rect::from_min_max(Pos2::new(100.0, 50.0), Pos2::new(900.0, 650.0));
+        let anchor = Pos2::new(420.0, 260.0);
+        let before = viewport.screen_to_canvas(anchor, screen_rect);
+
+        viewport.zoom_around(anchor, screen_rect, 1.75);
+
+        let after = viewport.screen_to_canvas(anchor, screen_rect);
+        assert_eq!(before, after);
     }
 }

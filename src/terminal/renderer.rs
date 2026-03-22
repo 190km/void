@@ -19,7 +19,9 @@ const CELL_HEIGHT_ESTIMATE: f32 = FONT_SIZE * 1.25;
 
 /// Public cell size for mouse coordinate mapping.
 #[allow(dead_code)]
-pub fn cell_size(ctx: &egui::Context) -> (f32, f32) { measure_cell(ctx) }
+pub fn cell_size(ctx: &egui::Context) -> (f32, f32) {
+    measure_cell(ctx)
+}
 
 fn measure_cell(ctx: &egui::Context) -> (f32, f32) {
     let font = FontId::monospace(FONT_SIZE);
@@ -69,7 +71,9 @@ pub fn render_terminal(
 ) {
     let font = FontId::monospace(FONT_SIZE);
     let (cw, ch) = measure_cell(ctx);
-    if cw < 1.0 || ch < 1.0 { return; }
+    if cw < 1.0 || ch < 1.0 {
+        return;
+    }
 
     // Use painter_at to CLIP everything to the body rect — no text overflow
     let clipped = painter.with_clip_rect(body_rect);
@@ -79,15 +83,20 @@ pub fn render_terminal(
     let colors = content.colors;
 
     // Keep the rendered viewport aligned with the PTY grid sizing.
-    let (max_col, max_row) = grid_size_for_cell_metrics(body_rect.width(), body_rect.height(), cw, ch);
+    let (max_col, max_row) =
+        grid_size_for_cell_metrics(body_rect.width(), body_rect.height(), cw, ch);
 
     // --- Backgrounds ---
     let mut run: Option<(Color32, f32, f32, f32)> = None;
     for indexed in content.display_iter {
-        let Some(viewport_point) = point_to_viewport(display_offset, indexed.point) else { continue; };
+        let Some(viewport_point) = point_to_viewport(display_offset, indexed.point) else {
+            continue;
+        };
         let col = viewport_point.column.0;
         let row = viewport_point.line;
-        if row >= max_row || col >= max_col { continue; }
+        if row >= max_row || col >= max_col {
+            continue;
+        }
 
         let x = body_rect.min.x + PAD_X + col as f32 * cw;
         let y = body_rect.min.y + PAD_Y + row as f32 * ch;
@@ -95,7 +104,9 @@ pub fn render_terminal(
         let cell = &indexed.cell;
         let fl = cell.flags;
         if fl.contains(Flags::WIDE_CHAR_SPACER) {
-            if let Some(ref mut r) = run { r.3 += cw; }
+            if let Some(ref mut r) = run {
+                r.3 += cw;
+            }
             continue;
         }
         let bg = if fl.contains(Flags::INVERSE) {
@@ -103,44 +114,66 @@ pub fn render_terminal(
         } else {
             colors::to_egui_color(cell.bg, colors)
         };
-        let w = if fl.contains(Flags::WIDE_CHAR) { cw * 2.0 } else { cw };
+        let w = if fl.contains(Flags::WIDE_CHAR) {
+            cw * 2.0
+        } else {
+            cw
+        };
 
         if bg != DEFAULT_BG {
             if let Some(ref mut r) = run {
                 if r.0 == bg && (r.2 - y).abs() < 0.1 && (r.1 + r.3 - x).abs() < 0.5 {
-                    r.3 += w; continue;
+                    r.3 += w;
+                    continue;
                 }
                 clipped.rect_filled(
-                    Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)), 0.0, r.0);
+                    Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)),
+                    0.0,
+                    r.0,
+                );
             }
             run = Some((bg, x, y, w));
         } else if let Some(r) = run.take() {
             clipped.rect_filled(
-                Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)), 0.0, r.0);
+                Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)),
+                0.0,
+                r.0,
+            );
         }
     }
     if let Some(r) = run.take() {
         clipped.rect_filled(
-            Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)), 0.0, r.0);
+            Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)),
+            0.0,
+            r.0,
+        );
     }
 
     // --- Text ---
     let content2 = term.renderable_content();
     let display_offset = content2.display_offset;
     for indexed in content2.display_iter {
-        let Some(viewport_point) = point_to_viewport(display_offset, indexed.point) else { continue; };
+        let Some(viewport_point) = point_to_viewport(display_offset, indexed.point) else {
+            continue;
+        };
         let col = viewport_point.column.0;
         let row = viewport_point.line;
-        if row >= max_row || col >= max_col { continue; }
+        if row >= max_row || col >= max_col {
+            continue;
+        }
 
         let x = body_rect.min.x + PAD_X + col as f32 * cw;
         let y = body_rect.min.y + PAD_Y + row as f32 * ch;
 
         let cell = &indexed.cell;
         let fl = cell.flags;
-        if fl.contains(Flags::WIDE_CHAR_SPACER) { continue; }
+        if fl.contains(Flags::WIDE_CHAR_SPACER) {
+            continue;
+        }
         let c = cell.c;
-        if c == ' ' || c == '\0' { continue; }
+        if c == ' ' || c == '\0' {
+            continue;
+        }
 
         let mut fg = if fl.contains(Flags::INVERSE) {
             colors::to_egui_color(cell.bg, colors)
@@ -165,13 +198,21 @@ pub fn render_terminal(
             fg = brighten(fg);
         }
 
-        clipped.text(Pos2::new(x, y), egui::Align2::LEFT_TOP, c.to_string(), font.clone(), fg);
+        clipped.text(
+            Pos2::new(x, y),
+            egui::Align2::LEFT_TOP,
+            c.to_string(),
+            font.clone(),
+            fg,
+        );
     }
 
     // --- Cursor ---
     let cursor = content2.cursor;
     if cursor.shape != CursorShape::Hidden {
-        let Some(cursor_point) = point_to_viewport(display_offset, cursor.point) else { return; };
+        let Some(cursor_point) = point_to_viewport(display_offset, cursor.point) else {
+            return;
+        };
         let row = cursor_point.line;
         let col = cursor_point.column.0;
         if row < max_row && col < max_col {
@@ -181,17 +222,25 @@ pub fn render_terminal(
             let cc = Color32::from_rgb(196, 223, 255);
             match cursor.shape {
                 CursorShape::Block => {
-                    clipped.rect_filled(cr, 0.0,
-                        Color32::from_rgba_premultiplied(cc.r(), cc.g(), cc.b(), 180));
+                    clipped.rect_filled(
+                        cr,
+                        0.0,
+                        Color32::from_rgba_premultiplied(cc.r(), cc.g(), cc.b(), 180),
+                    );
                 }
                 CursorShape::Beam => {
                     clipped.rect_filled(
-                        Rect::from_min_size(cr.left_top(), Vec2::new(2.0, ch)), 0.0, cc);
+                        Rect::from_min_size(cr.left_top(), Vec2::new(2.0, ch)),
+                        0.0,
+                        cc,
+                    );
                 }
                 CursorShape::Underline => {
                     clipped.rect_filled(
                         Rect::from_min_size(Pos2::new(cx, cy + ch - 2.0), Vec2::new(cw, 2.0)),
-                        0.0, cc);
+                        0.0,
+                        cc,
+                    );
                 }
                 CursorShape::HollowBlock => {
                     clipped.rect_stroke(cr, 0.0, egui::Stroke::new(1.0, cc));

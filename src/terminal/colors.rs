@@ -6,22 +6,22 @@ use egui::Color32;
 
 /// Default ANSI 16-color palette.
 const ANSI_COLORS: [Color32; 16] = [
-    Color32::from_rgb(0, 0, 0),         // 0  Black
-    Color32::from_rgb(204, 0, 0),       // 1  Red
-    Color32::from_rgb(78, 154, 6),      // 2  Green
-    Color32::from_rgb(196, 160, 0),     // 3  Yellow
-    Color32::from_rgb(52, 101, 164),    // 4  Blue
-    Color32::from_rgb(117, 80, 123),    // 5  Magenta
-    Color32::from_rgb(6, 152, 154),     // 6  Cyan
-    Color32::from_rgb(211, 215, 207),   // 7  White
-    Color32::from_rgb(85, 87, 83),      // 8  Bright Black
-    Color32::from_rgb(239, 41, 41),     // 9  Bright Red
-    Color32::from_rgb(138, 226, 52),    // 10 Bright Green
-    Color32::from_rgb(252, 233, 79),    // 11 Bright Yellow
-    Color32::from_rgb(114, 159, 207),   // 12 Bright Blue
-    Color32::from_rgb(173, 127, 168),   // 13 Bright Magenta
-    Color32::from_rgb(52, 226, 226),    // 14 Bright Cyan
-    Color32::from_rgb(238, 238, 236),   // 15 Bright White
+    Color32::from_rgb(0, 0, 0),       // 0  Black
+    Color32::from_rgb(204, 0, 0),     // 1  Red
+    Color32::from_rgb(78, 154, 6),    // 2  Green
+    Color32::from_rgb(196, 160, 0),   // 3  Yellow
+    Color32::from_rgb(52, 101, 164),  // 4  Blue
+    Color32::from_rgb(117, 80, 123),  // 5  Magenta
+    Color32::from_rgb(6, 152, 154),   // 6  Cyan
+    Color32::from_rgb(211, 215, 207), // 7  White
+    Color32::from_rgb(85, 87, 83),    // 8  Bright Black
+    Color32::from_rgb(239, 41, 41),   // 9  Bright Red
+    Color32::from_rgb(138, 226, 52),  // 10 Bright Green
+    Color32::from_rgb(252, 233, 79),  // 11 Bright Yellow
+    Color32::from_rgb(114, 159, 207), // 12 Bright Blue
+    Color32::from_rgb(173, 127, 168), // 13 Bright Magenta
+    Color32::from_rgb(52, 226, 226),  // 14 Bright Cyan
+    Color32::from_rgb(238, 238, 236), // 15 Bright White
 ];
 
 pub const DEFAULT_FG: Color32 = Color32::from_rgb(200, 200, 200);
