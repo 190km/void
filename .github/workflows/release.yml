@@ -1,7 +1,9 @@
 name: Release
 
-on:
-  workflow_dispatch:
+on: workflow_dispatch
+
+permissions:
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}
@@ -10,39 +12,50 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  contents: write
-
 jobs:
-  # ── Build Windows + NSIS installer ────────────────────────────────
-  build-windows:
-    name: Build (Windows x64)
-    runs-on: windows-latest
-    timeout-minutes: 30
+  # ── Exactement comme Handy: créer une draft release via l'API GitHub ──
+  create-release:
+    runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      release-id: ${{ steps.create-release.outputs.result }}
+      version: ${{ steps.get-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read version
-        id: version
+      - name: Get version from Cargo.toml
+        id: get-version
         shell: bash
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "Application version from Cargo.toml: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Fail if tag already exists
-        shell: bash
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
-            echo "::error::Tag $TAG already exists. Bump the version in Cargo.toml first."
-            exit 1
-          fi
+      - name: Create Draft Release
+        id: create-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${{ steps.get-version.outputs.version }}`,
+              name: `v${{ steps.get-version.outputs.version }}`,
+              draft: true,
+              prerelease: false,
+              generate_release_notes: true
+            })
+            return data.id
+
+  # ── Build Windows + NSIS installer ────────────────────────────────
+  build-windows:
+    needs: create-release
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.create-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,19 +76,25 @@ jobs:
           Write-Host "Installer created:"
           Get-Item "installer\void-$env:VERSION-x86_64-setup.exe" | Select-Object Name, Length
 
-      - name: Create tag
+      - name: Upload installer to release
         shell: bash
         run: |
-          git tag "${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
+          gh release upload "v${VERSION}" "installer/void-${VERSION}-x86_64-setup.exe" --clobber
 
-      - name: Create release and upload installer
-        shell: bash
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          VERSION="${{ steps.version.outputs.version }}"
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --generate-notes \
-            --target "${{ github.sha }}" \
-            "installer/void-${VERSION}-x86_64-setup.exe"
+  # ── Publish: draft → public (comme Handy après que tous les builds passent) ──
+  publish-release:
+    needs:
+      - create-release
+      - build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release-id }},
+              draft: false
+            })
