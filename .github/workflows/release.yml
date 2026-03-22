@@ -9,66 +9,40 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 permissions:
   contents: write
 
 jobs:
-  # ── Create draft release ──────────────────────────────────────────
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
+  # ── Build Windows + NSIS installer ────────────────────────────────
+  build-windows:
+    name: Build (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 30
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read version from Cargo.toml
+      - name: Read version
         id: version
+        shell: bash
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "## Release" >> "$GITHUB_STEP_SUMMARY"
-          echo "Version: \`$VERSION\` → Tag: \`v$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail if tag already exists
+        shell: bash
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
             echo "::error::Tag $TAG already exists. Bump the version in Cargo.toml first."
             exit 1
           fi
-
-      - name: Create and push tag
-        run: |
-          git tag "${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
-
-      - name: Create draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --draft \
-            --title "${{ steps.version.outputs.tag }}" \
-            --generate-notes \
-            --target "${{ github.sha }}"
-
-  # ── Build Windows + NSIS installer ────────────────────────────────
-  build-windows:
-    name: Build (Windows x64)
-    needs: create-release
-    runs-on: windows-latest
-    timeout-minutes: 30
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ needs.create-release.outputs.version }}
-      TAG: ${{ needs.create-release.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -89,23 +63,19 @@ jobs:
           Write-Host "Installer created:"
           Get-Item "installer\void-$env:VERSION-x86_64-setup.exe" | Select-Object Name, Length
 
-      - name: Upload installer to release
+      - name: Create tag
         shell: bash
         run: |
-          gh release upload "$TAG" "installer/void-${VERSION}-x86_64-setup.exe" --clobber
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
 
-  # ── Publish the release ───────────────────────────────────────────
-  publish-release:
-    name: Publish Release
-    needs:
-      - create-release
-      - build-windows
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Publish release
+      - name: Create release and upload installer
+        shell: bash
         run: |
-          gh release edit "${{ needs.create-release.outputs.tag }}" --draft=false
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --target "${{ github.sha }}" \
+            "installer/void-${VERSION}-x86_64-setup.exe"
