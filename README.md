@@ -1,63 +1,46 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/banner-light.svg">
-    <img alt="Void" src="assets/banner-dark.svg" width="600">
-  </picture>
-</p>
+# Void
 
-<p align="center">
-  <strong>An infinite canvas where your terminals float free.</strong>
-</p>
+![Void](assets/banner.png)
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
-  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-2021_edition-orange" alt="Rust"></a>
-  <a href="#"><img src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen" alt="Platforms"></a>
-  <a href="#"><img src="https://img.shields.io/badge/gpu-wgpu_(Vulkan%2FMetal%2FDX12)-blueviolet" alt="GPU"></a>
-</p>
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-2021_edition-orange)](https://www.rust-lang.org)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen)](#)
+[![GPU](https://img.shields.io/badge/gpu-wgpu_(Vulkan%2FMetal%2FDX12)-blueviolet)](#)
 
----
+[Void](https://void.sh) is an infinite canvas terminal emulator — GPU-accelerated, cross-platform. No tabs, no splits, no tiling — just an infinite 2D surface where you place terminals anywhere with pan and zoom navigation.
 
-<!-- ![demo](assets/demo.gif) -->
+- Infinite 2D canvas where you place terminals anywhere
+- GPU-accelerated 60fps rendering via wgpu (Vulkan, Metal, DX12)
+- Real terminal emulation powered by alacritty_terminal (ANSI/VT100, 256-color, truecolor)
+- Workspaces, command palette, minimap, keyboard-first design
 
-> No tabs. No splits. No tiling. Just an infinite 2D surface where you place terminals anywhere — pan and zoom to navigate between them.
+![Demo](assets/demo.png)
 
-Built **entirely in Rust**. Zero web technologies. No Electron, no WebView, no JavaScript runtime. Native performance via wgpu.
+## Getting Started
 
-## Features
-
-| | |
-|---|---|
-| **Infinite Canvas** | Pan, zoom, and place terminals anywhere on a boundless 2D surface |
-| **GPU Accelerated** | 60fps rendering via wgpu — Vulkan, Metal, and DX12 backends |
-| **Real Terminal Emulation** | Powered by alacritty_terminal — full ANSI/VT100, 256-color, truecolor |
-| **Workspaces** | Independent canvas views for different contexts, each with their own layout |
-| **Command Palette** | `Ctrl+Shift+P` — fuzzy search across all actions |
-| **Minimap** | Bird's-eye overview of your entire terminal layout |
-| **Keyboard-First** | Every action reachable without a mouse |
-| **Cross-Platform** | Windows, Linux, macOS |
-
-## How it works
-
-```
-  You ──► Infinite Canvas (pan/zoom) ──► Terminal Panels (drag/resize anywhere)
-              GPU-rendered (wgpu)              ↕
-                                          alacritty_terminal + portable-pty
-                                              ↕
-                                          Real shell (bash, zsh, powershell, ...)
-```
-
-Each terminal panel is an independent PTY process rendered onto the canvas via the GPU. Panels can be freely dragged, resized, and arranged in any spatial layout you want. Zoom out to see everything, zoom in to focus.
-
-## Quickstart
+1. Clone the repository
 
 ```bash
-# prerequisites: rust toolchain (rustup.rs)
 git clone https://github.com/190km/void.git
+```
+
+2. Navigate into the project directory
+
+```bash
 cd void
+```
+
+3. Make sure you have the Rust toolchain installed ([rustup.rs](https://rustup.rs))
+
+4. Run the application
+
+```bash
 cargo run
 ```
+
+That's it! Void will compile and launch with a default terminal on the canvas.
+
+> Built **entirely in Rust**. Zero web technologies. No Electron, no WebView, no JavaScript runtime. Native performance via wgpu.
 
 <details>
 <summary><strong>Windows — MinGW-w64 setup</strong></summary>
@@ -80,7 +63,32 @@ cargo build --release
 
 </details>
 
-## Keyboard shortcuts
+## How It Works
+
+```
+  You ──► Infinite Canvas (pan/zoom) ──► Terminal Panels (drag/resize anywhere)
+              GPU-rendered (wgpu)              ↕
+                                          alacritty_terminal + portable-pty
+                                              ↕
+                                          Real shell (bash, zsh, powershell, ...)
+```
+
+Each terminal panel is an independent PTY process rendered onto the canvas via the GPU. Panels can be freely dragged, resized, and arranged in any spatial layout you want. Zoom out to see everything, zoom in to focus.
+
+## Features
+
+| | |
+|---|---|
+| **Infinite Canvas** | Pan, zoom, and place terminals anywhere on a boundless 2D surface |
+| **GPU Accelerated** | 60fps rendering via wgpu — Vulkan, Metal, and DX12 backends |
+| **Real Terminal Emulation** | Powered by alacritty_terminal — full ANSI/VT100, 256-color, truecolor |
+| **Workspaces** | Independent canvas views for different contexts, each with their own layout |
+| **Command Palette** | `Ctrl+Shift+P` — fuzzy search across all actions |
+| **Minimap** | Bird's-eye overview of your entire terminal layout |
+| **Keyboard-First** | Every action reachable without a mouse |
+| **Cross-Platform** | Windows, Linux, macOS |
+
+## Keyboard Shortcuts
 
 | Action | Shortcut |
 |---|---|
@@ -158,4 +166,3 @@ If you find a bug or have a feature request, [open an issue](https://github.com/
 ## License
 
 [MIT](LICENSE) — 190km
-

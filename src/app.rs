@@ -30,11 +30,25 @@ pub struct VoidApp {
     command_palette: CommandPalette,
     renaming_panel: Option<uuid::Uuid>,
     rename_buf: String,
+    brand_texture: egui::TextureHandle,
 }
 
 impl VoidApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = cc.egui_ctx.clone();
+
+        let brand_texture = {
+            let png = include_bytes!("../assets/brand.png");
+            let img = image::load_from_memory(png)
+                .expect("Failed to load brand logo")
+                .to_rgba8();
+            let (w, h) = img.dimensions();
+            ctx.load_texture(
+                "brand_logo",
+                egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw()),
+                egui::TextureOptions::LINEAR,
+            )
+        };
 
         let mut ws = Workspace::new("Default", None);
         ws.spawn_terminal(&ctx, PANEL_COLORS);
@@ -53,6 +67,7 @@ impl VoidApp {
             command_palette: CommandPalette::default(),
             renaming_panel: None,
             rename_buf: String::new(),
+            brand_texture,
         }
     }
 
@@ -313,10 +328,13 @@ impl eframe::App for VoidApp {
                 .show(ctx, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.add_space(14.0);
-                    ui.label(
-                        egui::RichText::new("void")
-                            .color(Color32::from_rgb(140, 140, 140))
-                            .size(11.0),
+                    ui.add(
+                        egui::Image::new(egui::load::SizedTexture::new(
+                            self.brand_texture.id(),
+                            self.brand_texture.size_vec2(),
+                        ))
+                        .max_height(14.0)
+                        .tint(Color32::from_rgb(140, 140, 140)),
                     );
                     ui.add_space(14.0);
 
