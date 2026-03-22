@@ -2,17 +2,14 @@
 
 ## What ships
 
-The release workflow builds and publishes:
+- Source code (zip + tar.gz) — auto-included by GitHub
+- Windows MSI installer (`void-X.Y.Z-x86_64.msi`)
 
-- Linux: tarball plus shell installer
-- macOS: tarball plus shell installer
-- Windows: zip, PowerShell installer, and MSI
+macOS (.dmg) and Linux (.deb) installers will be added in a future release.
 
-The current pipeline does not produce signed macOS app bundles or signed Windows installers. Add platform signing before broad public distribution.
+## Before releasing
 
-## Before tagging
-
-Run the local checks:
+Run local checks:
 
 ```bash
 cargo fmt --check
@@ -21,53 +18,36 @@ cargo test --locked
 cargo build --release --locked
 ```
 
-Update:
+Update the version in `Cargo.toml` and commit:
 
-- `Cargo.toml` version
-- PR labels if you want clean GitHub-generated release note categories
+```bash
+# edit Cargo.toml version
+git add Cargo.toml Cargo.lock
+git commit -m "release: X.Y.Z"
+git push
+```
 
 ## Cut a release
 
-```bash
-git add Cargo.toml Cargo.lock
-git commit -m "release: X.Y.Z"
-git tag vX.Y.Z
-git push
-git push --tags
-```
+1. Go to **Actions** → **Release** → **Run workflow** on the `main` branch
+2. The workflow will:
+   - Read the version from `Cargo.toml`
+   - Create and push a `vX.Y.Z` tag
+   - Create a draft GitHub release
+   - Build the Windows binary and MSI installer
+   - Upload the MSI to the release
+   - Publish the release
 
-Pushing the `v*` tag triggers `.github/workflows/release.yml`.
+## If something goes wrong
 
-## What GitHub Actions does
+If a build fails, the release stays in draft. To retry:
 
-1. Runs `dist host --steps=create` to compute the release plan.
-2. Builds local artifacts for Linux, macOS, and Windows.
-3. Builds global artifacts such as checksums and installers.
-4. Uploads artifacts and creates the GitHub Release with GitHub-generated notes.
+1. Delete the draft release from GitHub
+2. Delete the tag: `git push origin :refs/tags/vX.Y.Z`
+3. Fix the issue and push
+4. Run the workflow again
 
-## Release Notes Format
+## Release notes
 
-The published release body uses GitHub's automatic release notes, so it can produce sections like:
-
-- `What's Changed`
-- `New Contributors`
-- `Full Changelog`
-
-Categories are configured in `.github/release.yml` and depend on PR labels. For best results:
-
-- merge changes through pull requests
-- apply labels like `feat`, `fix`, `docs`, `chore`, or `breaking-change`
-
-## First-time GitHub setup
-
-Make sure the repository has:
-
-- GitHub Actions enabled
-- Permission for workflows to create releases
-- A public `repository` URL in `Cargo.toml`
-
-Optional later improvements:
-
-- Windows code signing
-- macOS signing and notarization
-- Homebrew, winget, `.deb`, `.rpm`, or `.dmg` publishing
+Categories are configured in `.github/release.yml` and depend on PR labels:
+`feat`, `fix`, `docs`, `chore`, `breaking-change`, etc.
