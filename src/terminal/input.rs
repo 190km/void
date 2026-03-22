@@ -8,13 +8,20 @@ pub struct InputMode {
     pub bracketed_paste: bool,
 }
 
-/// Process egui input events and return bytes to write to the PTY.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct InputResult {
+    pub bytes: Vec<u8>,
+    pub copy_selection: bool,
+}
+
+/// Process egui input events and return terminal actions.
 pub fn process_input(
     ctx: &egui::Context,
     void_shortcuts: &[(Modifiers, Key)],
     mode: InputMode,
-) -> Vec<u8> {
-    let mut output = Vec::new();
+    has_selection: bool,
+) -> InputResult {
+    let mut output = InputResult::default();
 
     ctx.input(|input| {
         for event in &input.events {
@@ -22,7 +29,7 @@ pub fn process_input(
                 Event::Text(text) => {
                     // Regular text input is emitted as text events.
                     if !input.modifiers.ctrl && !input.modifiers.alt {
-                        output.extend_from_slice(text.as_bytes());
+                        output.bytes.extend_from_slice(text.as_bytes());
                     }
                 }
                 Event::Key {
@@ -35,19 +42,26 @@ pub fn process_input(
                         continue;
                     }
 
+                    if should_copy_selection(modifiers, key, has_selection) {
+                        output.copy_selection = true;
+                        continue;
+                    }
+
                     if let Some(bytes) = key_to_bytes(key, modifiers, mode) {
-                        output.extend_from_slice(&bytes);
+                        output.bytes.extend_from_slice(&bytes);
                     }
                 }
                 Event::Paste(text) => {
                     if mode.bracketed_paste {
-                        output.extend_from_slice(b"\x1b[200~");
-                        output.extend_from_slice(text.as_bytes());
-                        output.extend_from_slice(b"\x1b[201~");
+                        output.bytes.extend_from_slice(b"\x1b[200~");
+                        output.bytes.extend_from_slice(text.as_bytes());
+                        output.bytes.extend_from_slice(b"\x1b[201~");
                     } else {
-                        output.extend_from_slice(text.as_bytes());
+                        output.bytes.extend_from_slice(text.as_bytes());
                     }
                 }
+                Event::Copy => handle_copy_event(&mut output, has_selection),
+                Event::Cut => handle_cut_event(&mut output, has_selection),
                 _ => {}
             }
         }
@@ -61,6 +75,43 @@ fn is_void_shortcut(modifiers: &Modifiers, key: &Key, shortcuts: &[(Modifiers, K
     shortcuts
         .iter()
         .any(|(m, k)| m.ctrl == modifiers.ctrl && m.shift == modifiers.shift && k == key)
+}
+
+#[cfg(target_os = "macos")]
+fn should_copy_selection(modifiers: &Modifiers, key: &Key, has_selection: bool) -> bool {
+    has_selection && modifiers.command && !modifiers.ctrl && !modifiers.alt && *key == Key::C
+}
+
+#[cfg(not(target_os = "macos"))]
+fn should_copy_selection(modifiers: &Modifiers, key: &Key, has_selection: bool) -> bool {
+    (modifiers.ctrl && modifiers.shift && !modifiers.alt && *key == Key::C)
+        || (has_selection && modifiers.ctrl && !modifiers.shift && !modifiers.alt && *key == Key::C)
+}
+
+#[cfg(target_os = "macos")]
+fn handle_copy_event(output: &mut InputResult, has_selection: bool) {
+    if has_selection {
+        output.copy_selection = true;
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn handle_copy_event(output: &mut InputResult, has_selection: bool) {
+    if has_selection {
+        output.copy_selection = true;
+    } else {
+        output.bytes.push(0x03);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn handle_cut_event(_output: &mut InputResult, _has_selection: bool) {}
+
+#[cfg(not(target_os = "macos"))]
+fn handle_cut_event(output: &mut InputResult, has_selection: bool) {
+    if !has_selection {
+        output.bytes.push(0x18);
+    }
 }
 
 /// Convert a key press + modifiers to terminal byte sequence.
@@ -335,5 +386,37 @@ mod tests {
             ),
             Some(b"\x1b[1;2C".to_vec())
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn copy_event_maps_to_sigint_on_non_macos() {
+        let mut result = InputResult::default();
+        handle_copy_event(&mut result, false);
+
+        assert_eq!(result.bytes, vec![0x03]);
+        assert!(!result.copy_selection);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn copy_event_prefers_selection_over_sigint() {
+        let mut result = InputResult::default();
+        handle_copy_event(&mut result, true);
+
+        assert!(result.bytes.is_empty());
+        assert!(result.copy_selection);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_c_with_selection_is_copy_shortcut() {
+        let modifiers = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+
+        assert!(should_copy_selection(&modifiers, &Key::C, true));
+        assert!(!should_copy_selection(&modifiers, &Key::C, false));
     }
 }

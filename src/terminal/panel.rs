@@ -342,10 +342,20 @@ impl TerminalPanel {
             return;
         }
         if let Some(pty) = &self.pty {
-            let bytes =
-                crate::terminal::input::process_input(ctx, VOID_SHORTCUTS, self.input_mode());
-            if !bytes.is_empty() {
-                pty.write(&bytes);
+            let input =
+                crate::terminal::input::process_input(
+                    ctx,
+                    VOID_SHORTCUTS,
+                    self.input_mode(),
+                    self.selection.is_some(),
+                );
+            if input.copy_selection {
+                if let Some(text) = self.selected_text() {
+                    ctx.copy_text(text);
+                }
+            }
+            if !input.bytes.is_empty() {
+                pty.write(&input.bytes);
             }
         }
     }
@@ -386,6 +396,18 @@ impl TerminalPanel {
             .floor()
             .clamp(0.0, (self.last_rows as f32) - 1.0) as usize;
         (col, row)
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (sc, sr, ec, er) = self.selection?;
+        let pty = self.pty.as_ref()?;
+        let term = pty.term.lock().ok()?;
+        let text = extract_selection_text(&term, sc, sr, ec, er);
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> PanelInteraction {
@@ -711,17 +733,6 @@ impl TerminalPanel {
         }
         if local_interactions_enabled && body_resp.drag_stopped() {
             self.selecting = false;
-            // Copy selection to clipboard
-            if let Some((sc, sr, ec, er)) = self.selection {
-                if let Some(pty) = &self.pty {
-                    if let Ok(term) = pty.term.lock() {
-                        let text = extract_selection_text(&term, sc, sr, ec, er);
-                        if !text.is_empty() {
-                            ui.output_mut(|o| o.copied_text = text);
-                        }
-                    }
-                }
-            }
         }
 
         // Title: drag to move, click to focus
