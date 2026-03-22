@@ -1,6 +1,7 @@
 // TerminalPanel — canvas space, TSTransform zoom, full terminal interaction.
 
 use crate::terminal::pty::PtyHandle;
+use alacritty_terminal::term::TermMode;
 use egui::{Color32, Key, Modifiers, Pos2, Rect, Vec2};
 use uuid::Uuid;
 
@@ -261,6 +262,33 @@ impl TerminalPanel {
         Vec2::new(content_width, body_height)
     }
 
+    fn input_mode(&self) -> crate::terminal::input::InputMode {
+        let Some(pty) = &self.pty else {
+            return crate::terminal::input::InputMode::default();
+        };
+        let Ok(term) = pty.term.lock() else {
+            return crate::terminal::input::InputMode::default();
+        };
+
+        let mode = *term.mode();
+        crate::terminal::input::InputMode {
+            app_cursor: mode.contains(TermMode::APP_CURSOR),
+            bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
+        }
+    }
+
+    fn local_interactions_enabled(&self) -> bool {
+        let Some(pty) = &self.pty else {
+            return true;
+        };
+        let Ok(term) = pty.term.lock() else {
+            return true;
+        };
+
+        let mode = *term.mode();
+        !mode.intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE)
+    }
+
     pub fn scroll_hit_test(&self, canvas_pos: Pos2) -> bool {
         Self::terminal_body_rect(self.rect()).contains(canvas_pos)
     }
@@ -269,6 +297,9 @@ impl TerminalPanel {
         let Some(pty) = &self.pty else {
             return;
         };
+        if !self.local_interactions_enabled() {
+            return;
+        }
         if scroll_y == 0.0 {
             return;
         }
@@ -311,7 +342,8 @@ impl TerminalPanel {
             return;
         }
         if let Some(pty) = &self.pty {
-            let bytes = crate::terminal::input::process_input(ctx, VOID_SHORTCUTS);
+            let bytes =
+                crate::terminal::input::process_input(ctx, VOID_SHORTCUTS, self.input_mode());
             if !bytes.is_empty() {
                 pty.write(&bytes);
             }
@@ -454,12 +486,22 @@ impl TerminalPanel {
         let content_rect = Self::terminal_content_rect(body);
         let scrollbar_rect = Self::scrollbar_track_rect(body);
         let mut scrollbar_state = None;
+        let mut local_interactions_enabled = true;
 
         if let Some(pty) = &self.pty {
             if let Ok(term) = pty.term.lock() {
                 use alacritty_terminal::grid::Dimensions;
 
-                crate::terminal::renderer::render_terminal(ui.ctx(), painter, &term, content_rect);
+                local_interactions_enabled = !term
+                    .mode()
+                    .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE);
+                crate::terminal::renderer::render_terminal(
+                    ui.ctx(),
+                    painter,
+                    &term,
+                    content_rect,
+                    self.focused,
+                );
                 scrollbar_state = Some(ScrollbarState {
                     history_size: term.grid().history_size(),
                     display_offset: term.grid().display_offset(),
@@ -569,40 +611,45 @@ impl TerminalPanel {
             }
         }
 
-        // Draw selection highlight (clipped to body)
-        if let Some((sc, sr, ec, er)) = self.selection {
-            let (cw, ch) = crate::terminal::renderer::cell_size(ui.ctx());
-            let pad_x = crate::terminal::renderer::PAD_X;
-            let pad_y = crate::terminal::renderer::PAD_Y;
-            let max_col = self.last_cols as usize;
-            let max_row = self.last_rows as usize;
+        // Draw selection highlight (clipped to body).
+        if local_interactions_enabled {
+            if let Some((sc, sr, ec, er)) = self.selection {
+                let (cw, ch) = crate::terminal::renderer::cell_size(ui.ctx());
+                let pad_x = crate::terminal::renderer::PAD_X;
+                let pad_y = crate::terminal::renderer::PAD_Y;
+                let max_col = self.last_cols as usize;
+                let max_row = self.last_rows as usize;
 
-            let (start_row, start_col, end_row, end_col) = if sr < er || (sr == er && sc <= ec) {
-                (
-                    sr.min(max_row.saturating_sub(1)),
-                    sc.min(max_col.saturating_sub(1)),
-                    er.min(max_row.saturating_sub(1)),
-                    ec.min(max_col.saturating_sub(1)),
-                )
-            } else {
-                (
-                    er.min(max_row.saturating_sub(1)),
-                    ec.min(max_col.saturating_sub(1)),
-                    sr.min(max_row.saturating_sub(1)),
-                    sc.min(max_col.saturating_sub(1)),
-                )
-            };
+                let (start_row, start_col, end_row, end_col) = if sr < er || (sr == er && sc <= ec)
+                {
+                    (
+                        sr.min(max_row.saturating_sub(1)),
+                        sc.min(max_col.saturating_sub(1)),
+                        er.min(max_row.saturating_sub(1)),
+                        ec.min(max_col.saturating_sub(1)),
+                    )
+                } else {
+                    (
+                        er.min(max_row.saturating_sub(1)),
+                        ec.min(max_col.saturating_sub(1)),
+                        sr.min(max_row.saturating_sub(1)),
+                        sc.min(max_col.saturating_sub(1)),
+                    )
+                };
 
-            let clipped = painter.with_clip_rect(content_rect);
-            for row in start_row..=end_row {
-                let c0 = if row == start_row { start_col } else { 0 };
-                let c1 = (if row == end_row { end_col + 1 } else { max_col }).min(max_col);
-                let x0 = content_rect.min.x + pad_x + c0 as f32 * cw;
-                let y0 = content_rect.min.y + pad_y + row as f32 * ch;
-                let x1 = content_rect.min.x + pad_x + c1 as f32 * cw;
-                let sel_rect = Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y0 + ch));
-                clipped.rect_filled(sel_rect, 0.0, SELECTION_BG);
+                let clipped = painter.with_clip_rect(content_rect);
+                for row in start_row..=end_row {
+                    let c0 = if row == start_row { start_col } else { 0 };
+                    let c1 = (if row == end_row { end_col + 1 } else { max_col }).min(max_col);
+                    let x0 = content_rect.min.x + pad_x + c0 as f32 * cw;
+                    let y0 = content_rect.min.y + pad_y + row as f32 * ch;
+                    let x1 = content_rect.min.x + pad_x + c1 as f32 * cw;
+                    let sel_rect = Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y0 + ch));
+                    clipped.rect_filled(sel_rect, 0.0, SELECTION_BG);
+                }
             }
+        } else {
+            self.selecting = false;
         }
 
         // ========== INTERACTIONS ==========
@@ -611,7 +658,11 @@ impl TerminalPanel {
         let body_resp = ui.interact(
             content_rect,
             egui::Id::new(self.id).with("body"),
-            egui::Sense::click_and_drag(),
+            if local_interactions_enabled {
+                egui::Sense::click_and_drag()
+            } else {
+                egui::Sense::click()
+            },
         );
 
         if body_resp.clicked_by(egui::PointerButton::Primary) {
@@ -620,7 +671,7 @@ impl TerminalPanel {
         }
 
         // Text selection via drag
-        if body_resp.drag_started_by(egui::PointerButton::Primary) {
+        if local_interactions_enabled && body_resp.drag_started_by(egui::PointerButton::Primary) {
             ix.clicked = true;
             if let Some(pos) = body_resp.interact_pointer_pos() {
                 // interact_pointer_pos is already in canvas space (egui applies inverse transform)
@@ -629,7 +680,10 @@ impl TerminalPanel {
                 self.selecting = true;
             }
         }
-        if self.selecting && body_resp.dragged_by(egui::PointerButton::Primary) {
+        if local_interactions_enabled
+            && self.selecting
+            && body_resp.dragged_by(egui::PointerButton::Primary)
+        {
             // Use hover_pos() from the response — it's in canvas space (transformed)
             if let Some(pos) = body_resp.hover_pos() {
                 let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
@@ -646,7 +700,7 @@ impl TerminalPanel {
                 }
             }
         }
-        if body_resp.drag_stopped() {
+        if local_interactions_enabled && body_resp.drag_stopped() {
             self.selecting = false;
             // Copy selection to clipboard
             if let Some((sc, sr, ec, er)) = self.selection {

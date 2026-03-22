@@ -7,6 +7,7 @@ use alacritty_terminal::term::point_to_viewport;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::CursorShape;
 use egui::{Color32, FontId, Pos2, Rect, Vec2};
+use std::time::Duration;
 
 use crate::terminal::colors::{self, DEFAULT_BG};
 use crate::terminal::pty::EventProxy;
@@ -16,6 +17,8 @@ pub const PAD_X: f32 = 8.0;
 pub const PAD_Y: f32 = 4.0;
 const CELL_WIDTH_ESTIMATE: f32 = FONT_SIZE * 0.6;
 const CELL_HEIGHT_ESTIMATE: f32 = FONT_SIZE * 1.25;
+const CURSOR_BLINK_ON_SECONDS: f64 = 0.6;
+const CURSOR_BLINK_OFF_SECONDS: f64 = 0.4;
 
 /// Public cell size for mouse coordinate mapping.
 #[allow(dead_code)]
@@ -68,6 +71,7 @@ pub fn render_terminal(
     painter: &egui::Painter,
     term: &Term<EventProxy>,
     body_rect: Rect,
+    focused: bool,
 ) {
     let font = FontId::monospace(FONT_SIZE);
     let (cw, ch) = measure_cell(ctx);
@@ -209,7 +213,16 @@ pub fn render_terminal(
 
     // --- Cursor ---
     let cursor = content2.cursor;
-    if cursor.shape != CursorShape::Hidden {
+    let cursor_style = term.cursor_style();
+    if should_draw_cursor(
+        cursor.shape,
+        cursor_style.blinking,
+        focused,
+        ctx.input(|i| i.time),
+    ) {
+        if cursor_style.blinking {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
         let Some(cursor_point) = point_to_viewport(display_offset, cursor.point) else {
             return;
         };
@@ -251,10 +264,48 @@ pub fn render_terminal(
     }
 }
 
+fn should_draw_cursor(
+    shape: CursorShape,
+    blinking: bool,
+    focused: bool,
+    time_seconds: f64,
+) -> bool {
+    if !focused || shape == CursorShape::Hidden {
+        return false;
+    }
+
+    if !blinking {
+        return true;
+    }
+
+    blink_phase_visible(time_seconds)
+}
+
+fn blink_phase_visible(time_seconds: f64) -> bool {
+    let cycle = CURSOR_BLINK_ON_SECONDS + CURSOR_BLINK_OFF_SECONDS;
+    (time_seconds % cycle) < CURSOR_BLINK_ON_SECONDS
+}
+
 fn brighten(c: Color32) -> Color32 {
     Color32::from_rgb(
         (c.r() as u16 * 4 / 3).min(255) as u8,
         (c.g() as u16 * 4 / 3).min(255) as u8,
         (c.b() as u16 * 4 / 3).min(255) as u8,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unfocused_cursor_is_hidden() {
+        assert!(!should_draw_cursor(CursorShape::Block, false, false, 0.0));
+    }
+
+    #[test]
+    fn blinking_cursor_turns_off_during_hidden_phase() {
+        assert!(blink_phase_visible(0.2));
+        assert!(!blink_phase_visible(0.8));
+    }
 }

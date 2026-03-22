@@ -1,18 +1,26 @@
-// Maps egui keyboard events to terminal input bytes
+// Maps egui keyboard events to terminal input bytes.
 
 use egui::{Event, Key, Modifiers};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputMode {
+    pub app_cursor: bool,
+    pub bracketed_paste: bool,
+}
+
 /// Process egui input events and return bytes to write to the PTY.
-/// Returns None if no terminal input was generated.
-pub fn process_input(ctx: &egui::Context, void_shortcuts: &[(Modifiers, Key)]) -> Vec<u8> {
+pub fn process_input(
+    ctx: &egui::Context,
+    void_shortcuts: &[(Modifiers, Key)],
+    mode: InputMode,
+) -> Vec<u8> {
     let mut output = Vec::new();
 
     ctx.input(|input| {
         for event in &input.events {
             match event {
                 Event::Text(text) => {
-                    // Regular text input (letters, numbers, punctuation)
-                    // Only if no ctrl/alt modifier (those are handled via Key events)
+                    // Regular text input is emitted as text events.
                     if !input.modifiers.ctrl && !input.modifiers.alt {
                         output.extend_from_slice(text.as_bytes());
                     }
@@ -23,20 +31,22 @@ pub fn process_input(ctx: &egui::Context, void_shortcuts: &[(Modifiers, Key)]) -
                     modifiers,
                     ..
                 } => {
-                    // Skip Void app shortcuts
                     if is_void_shortcut(modifiers, key, void_shortcuts) {
                         continue;
                     }
 
-                    if let Some(bytes) = key_to_bytes(key, modifiers) {
+                    if let Some(bytes) = key_to_bytes(key, modifiers, mode) {
                         output.extend_from_slice(&bytes);
                     }
                 }
                 Event::Paste(text) => {
-                    // Bracketed paste mode support
-                    output.extend_from_slice(b"\x1b[200~");
-                    output.extend_from_slice(text.as_bytes());
-                    output.extend_from_slice(b"\x1b[201~");
+                    if mode.bracketed_paste {
+                        output.extend_from_slice(b"\x1b[200~");
+                        output.extend_from_slice(text.as_bytes());
+                        output.extend_from_slice(b"\x1b[201~");
+                    } else {
+                        output.extend_from_slice(text.as_bytes());
+                    }
                 }
                 _ => {}
             }
@@ -54,41 +64,70 @@ fn is_void_shortcut(modifiers: &Modifiers, key: &Key, shortcuts: &[(Modifiers, K
 }
 
 /// Convert a key press + modifiers to terminal byte sequence.
-fn key_to_bytes(key: &Key, modifiers: &Modifiers) -> Option<Vec<u8>> {
-    // Ctrl+letter → control character
+fn key_to_bytes(key: &Key, modifiers: &Modifiers, mode: InputMode) -> Option<Vec<u8>> {
+    // Ctrl+letter -> control character.
     if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
         if let Some(byte) = ctrl_key_byte(key) {
             return Some(vec![byte]);
         }
     }
 
-    // Alt+key → ESC prefix
+    // Alt+key -> ESC prefix.
     if modifiers.alt && !modifiers.ctrl {
         if let Some(c) = key_to_char(key) {
-            let mut bytes = vec![0x1b]; // ESC
+            let mut bytes = vec![0x1b];
             bytes.extend_from_slice(c.to_string().as_bytes());
             return Some(bytes);
         }
     }
 
-    // Special keys
     match key {
         Key::Enter => Some(b"\r".to_vec()),
         Key::Backspace => Some(b"\x7f".to_vec()),
         Key::Tab => {
             if modifiers.shift {
-                Some(b"\x1b[Z".to_vec()) // Shift+Tab = reverse tab
+                Some(b"\x1b[Z".to_vec())
             } else {
                 Some(b"\t".to_vec())
             }
         }
         Key::Escape => Some(b"\x1b".to_vec()),
-        Key::ArrowUp => Some(csi_modifier(b"A", modifiers)),
-        Key::ArrowDown => Some(csi_modifier(b"B", modifiers)),
-        Key::ArrowRight => Some(csi_modifier(b"C", modifiers)),
-        Key::ArrowLeft => Some(csi_modifier(b"D", modifiers)),
-        Key::Home => Some(csi_modifier(b"H", modifiers)),
-        Key::End => Some(csi_modifier(b"F", modifiers)),
+        Key::ArrowUp => Some(cursor_key_sequence(
+            b"A",
+            b"\x1bOA",
+            modifiers,
+            mode.app_cursor,
+        )),
+        Key::ArrowDown => Some(cursor_key_sequence(
+            b"B",
+            b"\x1bOB",
+            modifiers,
+            mode.app_cursor,
+        )),
+        Key::ArrowRight => Some(cursor_key_sequence(
+            b"C",
+            b"\x1bOC",
+            modifiers,
+            mode.app_cursor,
+        )),
+        Key::ArrowLeft => Some(cursor_key_sequence(
+            b"D",
+            b"\x1bOD",
+            modifiers,
+            mode.app_cursor,
+        )),
+        Key::Home => Some(cursor_key_sequence(
+            b"H",
+            b"\x1bOH",
+            modifiers,
+            mode.app_cursor,
+        )),
+        Key::End => Some(cursor_key_sequence(
+            b"F",
+            b"\x1bOF",
+            modifiers,
+            mode.app_cursor,
+        )),
         Key::PageUp => Some(b"\x1b[5~".to_vec()),
         Key::PageDown => Some(b"\x1b[6~".to_vec()),
         Key::Insert => Some(b"\x1b[2~".to_vec()),
@@ -107,12 +146,25 @@ fn key_to_bytes(key: &Key, modifiers: &Modifiers) -> Option<Vec<u8>> {
         Key::F12 => Some(b"\x1b[24~".to_vec()),
         Key::Space => {
             if modifiers.ctrl {
-                Some(vec![0x00]) // Ctrl+Space = NUL
+                Some(vec![0x00])
             } else {
-                None // handled by Event::Text
+                None
             }
         }
-        _ => None, // Handled by Event::Text for regular characters
+        _ => None,
+    }
+}
+
+fn cursor_key_sequence(
+    normal_suffix: &[u8],
+    app_sequence: &[u8],
+    modifiers: &Modifiers,
+    app_cursor: bool,
+) -> Vec<u8> {
+    if app_cursor && modifier_param(modifiers) == 1 {
+        app_sequence.to_vec()
+    } else {
+        csi_modifier(normal_suffix, modifiers)
     }
 }
 
@@ -120,7 +172,6 @@ fn key_to_bytes(key: &Key, modifiers: &Modifiers) -> Option<Vec<u8>> {
 fn csi_modifier(suffix: &[u8], modifiers: &Modifiers) -> Vec<u8> {
     let modifier_code = modifier_param(modifiers);
     if modifier_code > 1 {
-        // CSI 1 ; <modifier> <suffix>
         let mut seq = b"\x1b[1;".to_vec();
         seq.extend_from_slice(modifier_code.to_string().as_bytes());
         seq.extend_from_slice(suffix);
@@ -147,7 +198,7 @@ fn modifier_param(modifiers: &Modifiers) -> u8 {
     code
 }
 
-/// Map Ctrl+key to control character byte (0x01–0x1A for A–Z).
+/// Map Ctrl+key to control character byte (0x01-0x1A for A-Z).
 fn ctrl_key_byte(key: &Key) -> Option<u8> {
     match key {
         Key::A => Some(0x01),
@@ -176,9 +227,9 @@ fn ctrl_key_byte(key: &Key) -> Option<u8> {
         Key::X => Some(0x18),
         Key::Y => Some(0x19),
         Key::Z => Some(0x1A),
-        Key::OpenBracket => Some(0x1B),  // Ctrl+[ = ESC
-        Key::Backslash => Some(0x1C),    // Ctrl+\ = FS
-        Key::CloseBracket => Some(0x1D), // Ctrl+] = GS
+        Key::OpenBracket => Some(0x1B),
+        Key::Backslash => Some(0x1C),
+        Key::CloseBracket => Some(0x1D),
         _ => None,
     }
 }
@@ -231,5 +282,58 @@ fn key_to_char(key: &Key) -> Option<char> {
         Key::Backslash => Some('\\'),
         Key::Backtick => Some('`'),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_keys_follow_application_cursor_mode() {
+        let modifiers = Modifiers::default();
+
+        assert_eq!(
+            key_to_bytes(
+                &Key::ArrowUp,
+                &modifiers,
+                InputMode {
+                    app_cursor: true,
+                    bracketed_paste: false,
+                },
+            ),
+            Some(b"\x1bOA".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::ArrowUp,
+                &modifiers,
+                InputMode {
+                    app_cursor: false,
+                    bracketed_paste: false,
+                },
+            ),
+            Some(b"\x1b[A".to_vec())
+        );
+    }
+
+    #[test]
+    fn modified_arrow_keys_stay_in_csi_form() {
+        let modifiers = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+
+        assert_eq!(
+            key_to_bytes(
+                &Key::ArrowRight,
+                &modifiers,
+                InputMode {
+                    app_cursor: true,
+                    bracketed_paste: false,
+                },
+            ),
+            Some(b"\x1b[1;2C".to_vec())
+        );
     }
 }
