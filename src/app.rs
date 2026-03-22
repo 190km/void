@@ -224,7 +224,7 @@ impl eframe::App for VoidApp {
 
                     // Workspaces + terminals dropdown
                     let mut ws_action = None;
-                    let mut should_spawn_terminal = false;
+                    let mut spawn_terminal = false;
                     {
                         use crate::sidebar::workspace_list::WorkspaceAction;
 
@@ -243,7 +243,6 @@ impl eframe::App for VoidApp {
                         ui.add_space(4.0);
 
                         let mut clicked_panel: Option<(usize, uuid::Uuid)> = None;
-                        let mut should_spawn_terminal = false;
 
                         for (i, (name, active)) in names.iter().enumerate() {
                             let tc = if *active { Color32::WHITE } else { Color32::from_rgb(120, 120, 120) };
@@ -297,7 +296,7 @@ impl eframe::App for VoidApp {
                                     ui.add(egui::Label::new(egui::RichText::new("+ terminal").color(Color32::from_rgb(60, 60, 60)).size(10.0))
                                         .selectable(false).sense(egui::Sense::click()))
                                 });
-                                if nr.inner.clicked() { should_spawn_terminal = true; }
+                                if nr.inner.clicked() { spawn_terminal = true; }
                             }
 
                             ui.add_space(2.0);
@@ -334,7 +333,7 @@ impl eframe::App for VoidApp {
                             }
                         }
                     }
-                    if should_spawn_terminal { self.spawn_terminal(); }
+                    if spawn_terminal { self.spawn_terminal(); }
 
                     // Bottom
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
