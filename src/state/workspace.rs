@@ -49,6 +49,9 @@ impl Workspace {
         let row = (idx / 2) as f32;
         let position = egui::Pos2::new(50.0 + col * 1060.0, 50.0 + row * 660.0);
 
+        // Unfocus all existing panels FIRST
+        for p in &mut self.panels { p.focused = false; }
+
         let mut panel = TerminalPanel::new_with_terminal(
             ctx, position,
             Vec2::new(1000.0, 600.0),
@@ -56,10 +59,9 @@ impl Workspace {
             self.cwd.as_deref(),
         );
         panel.z_index = self.next_z;
-        panel.focused = true;
+        panel.focused = true; // New panel gets focus
         self.next_z += 1;
 
-        for p in &mut self.panels { p.focused = false; }
         self.panels.push(panel);
     }
 
