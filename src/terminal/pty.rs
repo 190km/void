@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -51,6 +52,7 @@ pub struct PtyHandle {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn portable_pty::MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    _event_thread: thread::JoinHandle<()>,
     _reader_thread: thread::JoinHandle<()>,
     _waiter_thread: thread::JoinHandle<()>,
 }
@@ -108,12 +110,53 @@ impl PtyHandle {
 
         // Spawn reader thread
         let term_clone = term.clone();
-        let title_clone = title.clone();
         let alive_clone = alive.clone();
         let writer_clone = writer.clone();
         let ctx_clone = ctx.clone();
+        let title_clone = title.clone();
+        let alive_clone_events = alive.clone();
+        let ctx_clone_events = ctx.clone();
         let alive_clone_wait = alive.clone();
         let ctx_clone_wait = ctx.clone();
+
+        let event_thread = thread::spawn(move || {
+            while let Ok(event) = event_rx.recv() {
+                match event {
+                    Event::PtyWrite(text) => {
+                        if let Ok(mut w) = writer_clone.lock() {
+                            let _ = w.write_all(text.as_bytes());
+                            let _ = w.flush();
+                        }
+                    }
+                    Event::Title(t) => {
+                        if let Ok(mut title) = title_clone.lock() {
+                            *title = t;
+                        }
+                    }
+                    Event::ResetTitle => {
+                        if let Ok(mut title) = title_clone.lock() {
+                            *title = "Terminal".to_string();
+                        }
+                    }
+                    Event::ChildExit(_) | Event::Exit => {
+                        alive_clone_events.store(false, Ordering::Relaxed);
+                    }
+                    Event::Wakeup
+                    | Event::Bell
+                    | Event::MouseCursorDirty
+                    | Event::CursorBlinkingChange
+                    | Event::ClipboardStore(_, _)
+                    | Event::ClipboardLoad(_, _)
+                    | Event::ColorRequest(_, _)
+                    | Event::TextAreaSizeRequest(_) => {}
+                }
+
+                ctx_clone_events.request_repaint();
+                if !alive_clone_events.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        });
 
         let reader_thread = thread::spawn(move || {
             let mut processor: Processor = Processor::new();
@@ -129,29 +172,6 @@ impl PtyHandle {
                                 break;
                             };
                             processor.advance(&mut *term, &buf[..n]);
-                        }
-
-                        // Process terminal events (outside of term lock)
-                        while let Ok(event) = event_rx.try_recv() {
-                            match event {
-                                Event::PtyWrite(text) => {
-                                    if let Ok(mut w) = writer_clone.lock() {
-                                        let _ = w.write_all(text.as_bytes());
-                                        let _ = w.flush();
-                                    }
-                                }
-                                Event::Title(t) => {
-                                    if let Ok(mut title) = title_clone.lock() {
-                                        *title = t;
-                                    }
-                                }
-                                Event::ResetTitle => {
-                                    if let Ok(mut title) = title_clone.lock() {
-                                        *title = "Terminal".to_string();
-                                    }
-                                }
-                                _ => {}
-                            }
                         }
 
                         ctx_clone.request_repaint();
@@ -180,6 +200,7 @@ impl PtyHandle {
             writer,
             master: pair.master,
             killer,
+            _event_thread: event_thread,
             _reader_thread: reader_thread,
             _waiter_thread: waiter_thread,
         })

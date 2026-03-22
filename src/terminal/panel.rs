@@ -670,6 +670,10 @@ impl TerminalPanel {
             self.selection = None; // Clear selection on click
         }
 
+        if body_resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+        }
+
         // Text selection via drag
         if local_interactions_enabled && body_resp.drag_started_by(egui::PointerButton::Primary) {
             ix.clicked = true;
@@ -729,6 +733,9 @@ impl TerminalPanel {
             ix.dragging_title = true;
             ix.drag_delta = title_resp.drag_delta();
             ix.clicked = true;
+        }
+        if title_resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
         }
 
         // Resize handles
