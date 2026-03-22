@@ -4,8 +4,8 @@ use egui::{self, Ui};
 use super::viewport::Viewport;
 
 /// Handle canvas pan/zoom input.
-/// `terminal_has_scroll` = true when a focused terminal is under the pointer (skip scroll-to-pan).
-pub fn handle_canvas_input(ui: &Ui, viewport: &mut Viewport, screen_rect: egui::Rect, terminal_has_scroll: bool) {
+/// `terminal_hovered` = true when the pointer is over a terminal, so wheel input should not pan the canvas.
+pub fn handle_canvas_input(ui: &Ui, viewport: &mut Viewport, screen_rect: egui::Rect, terminal_hovered: bool) {
     let ctx = ui.ctx();
 
     ctx.input(|input| {
@@ -29,7 +29,7 @@ pub fn handle_canvas_input(ui: &Ui, viewport: &mut Viewport, screen_rect: egui::
         }
 
         // --- Scroll to pan (when not zooming and no terminal is scrolling) ---
-        if zoom_delta == 1.0 && !input.modifiers.ctrl && !terminal_has_scroll {
+        if zoom_delta == 1.0 && !input.modifiers.ctrl && !terminal_hovered {
             let scroll = input.smooth_scroll_delta;
             if scroll.length() > 0.0 {
                 viewport.pan += scroll;

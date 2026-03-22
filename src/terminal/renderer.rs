@@ -3,6 +3,7 @@
 // GPU TSTransform handles zoom scaling of the rasterized glyphs.
 
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::point_to_viewport;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::CursorShape;
 use egui::{Color32, FontId, Pos2, Rect, Vec2};
@@ -10,9 +11,11 @@ use egui::{Color32, FontId, Pos2, Rect, Vec2};
 use crate::terminal::colors::{self, DEFAULT_BG};
 use crate::terminal::pty::EventProxy;
 
-pub const FONT_SIZE: f32 = 20.0;
+pub const FONT_SIZE: f32 = 16.0;
 pub const PAD_X: f32 = 8.0;
 pub const PAD_Y: f32 = 4.0;
+const CELL_WIDTH_ESTIMATE: f32 = FONT_SIZE * 0.6;
+const CELL_HEIGHT_ESTIMATE: f32 = FONT_SIZE * 1.25;
 
 /// Public cell size for mouse coordinate mapping.
 #[allow(dead_code)]
@@ -24,6 +27,37 @@ fn measure_cell(ctx: &egui::Context) -> (f32, f32) {
         let g = fonts.layout_no_wrap("M".to_string(), font, Color32::WHITE);
         (g.rect.width(), g.rect.height())
     })
+}
+
+fn grid_size_for_cell_metrics(
+    body_width: f32,
+    body_height: f32,
+    cell_width: f32,
+    cell_height: f32,
+) -> (usize, usize) {
+    let cols = ((body_width - PAD_X * 2.0) / cell_width).floor().max(2.0) as usize;
+    let rows = ((body_height - PAD_Y * 2.0) / cell_height).floor().max(1.0) as usize;
+    (cols, rows)
+}
+
+pub fn compute_grid_size(body_width: f32, body_height: f32) -> (u16, u16) {
+    let (cols, rows) = grid_size_for_cell_metrics(
+        body_width,
+        body_height,
+        CELL_WIDTH_ESTIMATE,
+        CELL_HEIGHT_ESTIMATE,
+    );
+    (cols as u16, rows as u16)
+}
+
+pub fn compute_grid_size_from_ctx(
+    ctx: &egui::Context,
+    body_width: f32,
+    body_height: f32,
+) -> (u16, u16) {
+    let (cw, ch) = measure_cell(ctx);
+    let (cols, rows) = grid_size_for_cell_metrics(body_width, body_height, cw, ch);
+    (cols as u16, rows as u16)
 }
 
 /// Render terminal in canvas space, clipped to body_rect.
@@ -41,19 +75,18 @@ pub fn render_terminal(
     let clipped = painter.with_clip_rect(body_rect);
 
     let content = term.renderable_content();
+    let display_offset = content.display_offset;
     let colors = content.colors;
 
-    // Max visible cols/rows for early exit
-    let max_col = ((body_rect.width() - PAD_X) / cw) as usize + 1;
-    let max_row = ((body_rect.height() - PAD_Y) / ch) as usize + 1;
+    // Keep the rendered viewport aligned with the PTY grid sizing.
+    let (max_col, max_row) = grid_size_for_cell_metrics(body_rect.width(), body_rect.height(), cw, ch);
 
     // --- Backgrounds ---
     let mut run: Option<(Color32, f32, f32, f32)> = None;
     for indexed in content.display_iter {
-        let col = indexed.point.column.0;
-        let line = indexed.point.line.0;
-        if line < 0 { continue; }
-        let row = line as usize;
+        let Some(viewport_point) = point_to_viewport(display_offset, indexed.point) else { continue; };
+        let col = viewport_point.column.0;
+        let row = viewport_point.line;
         if row >= max_row || col >= max_col { continue; }
 
         let x = body_rect.min.x + PAD_X + col as f32 * cw;
@@ -93,11 +126,11 @@ pub fn render_terminal(
 
     // --- Text ---
     let content2 = term.renderable_content();
+    let display_offset = content2.display_offset;
     for indexed in content2.display_iter {
-        let col = indexed.point.column.0;
-        let line = indexed.point.line.0;
-        if line < 0 { continue; }
-        let row = line as usize;
+        let Some(viewport_point) = point_to_viewport(display_offset, indexed.point) else { continue; };
+        let col = viewport_point.column.0;
+        let row = viewport_point.line;
         if row >= max_row || col >= max_col { continue; }
 
         let x = body_rect.min.x + PAD_X + col as f32 * cw;
@@ -137,9 +170,10 @@ pub fn render_terminal(
 
     // --- Cursor ---
     let cursor = content2.cursor;
-    if cursor.shape != CursorShape::Hidden && cursor.point.line.0 >= 0 {
-        let row = cursor.point.line.0 as usize;
-        let col = cursor.point.column.0;
+    if cursor.shape != CursorShape::Hidden {
+        let Some(cursor_point) = point_to_viewport(display_offset, cursor.point) else { return; };
+        let row = cursor_point.line;
+        let col = cursor_point.column.0;
         if row < max_row && col < max_col {
             let cx = body_rect.min.x + PAD_X + col as f32 * cw;
             let cy = body_rect.min.y + PAD_Y + row as f32 * ch;
@@ -166,13 +200,6 @@ pub fn render_terminal(
             }
         }
     }
-}
-
-pub fn compute_grid_size(body_width: f32, body_height: f32) -> (u16, u16) {
-    let (cw, ch) = (12.0_f32, 25.0_f32); // approximate for 20pt
-    let cols = ((body_width - PAD_X * 2.0) / cw).floor().max(2.0) as u16;
-    let rows = ((body_height - PAD_Y * 2.0) / ch).floor().max(1.0) as u16;
-    (cols, rows)
 }
 
 fn brighten(c: Color32) -> Color32 {

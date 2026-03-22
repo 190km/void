@@ -346,7 +346,7 @@ impl eframe::App for VoidApp {
         }
 
         // --- Canvas ---
-        // Check if pointer is over a focused terminal (use TSTransform for accuracy)
+        // Wheel ownership is hover-based: topmost terminal under the pointer gets scroll, otherwise canvas pans.
         let mut canvas_rect = ctx.screen_rect();
 
         // We need canvas_rect from CentralPanel first, then compute transform
@@ -356,8 +356,31 @@ impl eframe::App for VoidApp {
                 canvas_rect = ui.available_rect_before_wrap();
             });
 
-        // If any terminal is focused, scroll goes to it (not canvas pan)
-        let terminal_has_scroll = self.ws().panels.iter().any(|p| p.focused);
+        let hovered_terminal = ctx.input(|input| {
+            let Some(pointer_pos) = input.pointer.hover_pos() else { return None; };
+            if !canvas_rect.contains(pointer_pos) {
+                return None;
+            }
+
+            let pointer_canvas = self.viewport.screen_to_canvas(pointer_pos, canvas_rect);
+            self.ws().panels
+                .iter()
+                .enumerate()
+                .filter(|(_, panel)| panel.scroll_hit_test(pointer_canvas))
+                .max_by_key(|(_, panel)| panel.z_index)
+                .map(|(idx, _)| idx)
+        });
+
+        if let Some(idx) = hovered_terminal {
+            let scroll_y = ctx.input(|input| input.smooth_scroll_delta.y);
+            if scroll_y != 0.0 {
+                self.ws_mut().panels[idx].handle_scroll(ctx, scroll_y);
+                ctx.input_mut(|input| {
+                    input.smooth_scroll_delta = egui::Vec2::ZERO;
+                    input.raw_scroll_delta = egui::Vec2::ZERO;
+                });
+            }
+        }
 
         // Canvas input (grid, pan/zoom) — drawn on a background area
         egui::Area::new(egui::Id::new("canvas_bg_area"))
@@ -368,7 +391,7 @@ impl eframe::App for VoidApp {
                 ui.set_clip_rect(canvas_rect);
                 let (_, bg_resp) = ui.allocate_exact_size(canvas_rect.size(), egui::Sense::click());
 
-                crate::canvas::scene::handle_canvas_input(ui, &mut self.viewport, canvas_rect, terminal_has_scroll);
+                crate::canvas::scene::handle_canvas_input(ui, &mut self.viewport, canvas_rect, hovered_terminal.is_some());
 
                 if self.show_grid { crate::canvas::grid::draw_dot_grid(ui, &self.viewport, canvas_rect); }
 

@@ -38,3 +38,4 @@ framer.md
 
 # Claude plans
 .claude/plans/
+.claude/settings.local.json
