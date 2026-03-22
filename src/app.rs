@@ -4,6 +4,7 @@ use egui::{Color32, Pos2, Vec2};
 use crate::canvas::viewport::Viewport;
 use crate::command_palette::commands::Command;
 use crate::command_palette::CommandPalette;
+use crate::sidebar::{Sidebar, SidebarResponse, SIDEBAR_BG, SIDEBAR_BORDER, SIDEBAR_PADDING_H};
 use crate::state::workspace::Workspace;
 use crate::terminal::panel::PanelAction;
 
@@ -31,6 +32,7 @@ pub struct VoidApp {
     renaming_panel: Option<uuid::Uuid>,
     rename_buf: String,
     brand_texture: egui::TextureHandle,
+    sidebar: Sidebar,
 }
 
 impl VoidApp {
@@ -68,6 +70,7 @@ impl VoidApp {
             renaming_panel: None,
             rename_buf: String::new(),
             brand_texture,
+            sidebar: Sidebar::default(),
         }
     }
 
@@ -321,205 +324,26 @@ impl eframe::App for VoidApp {
                 .exact_width(SIDEBAR_WIDTH)
                 .frame(
                     egui::Frame::default()
-                        .fill(Color32::from_rgb(18, 18, 18))
-                        .stroke(egui::Stroke::new(0.5, Color32::from_rgb(35, 35, 35)))
-                        .inner_margin(egui::Margin::symmetric(14.0, 0.0)),
+                        .fill(SIDEBAR_BG)
+                        .stroke(egui::Stroke::new(0.5, SIDEBAR_BORDER))
+                        .inner_margin(egui::Margin::symmetric(SIDEBAR_PADDING_H, 0.0)),
                 )
                 .show(ctx, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.add_space(14.0);
-                    ui.add(
-                        egui::Image::new(egui::load::SizedTexture::new(
-                            self.brand_texture.id(),
-                            self.brand_texture.size_vec2(),
-                        ))
-                        .max_height(14.0)
-                        .tint(Color32::from_rgb(140, 140, 140)),
+                    let responses = self.sidebar.show(
+                        ui,
+                        &self.workspaces,
+                        self.active_ws,
+                        &self.brand_texture,
                     );
-                    ui.add_space(14.0);
-
-                    // Workspaces + terminals dropdown
-                    let mut ws_action = None;
-                    let mut spawn_terminal = false;
-                    {
-                        use crate::sidebar::workspace_list::WorkspaceAction;
-
-                        // Build a minimal workspace manager view for the widget
-                        let names: Vec<(String, bool)> = self
-                            .workspaces
-                            .iter()
-                            .enumerate()
-                            .map(|(i, ws)| (ws.name.clone(), i == self.active_ws))
-                            .collect();
-
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Workspaces")
-                                    .color(Color32::from_rgb(80, 80, 80))
-                                    .size(10.0),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let r = ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new("+")
-                                                .color(Color32::from_rgb(80, 80, 80))
-                                                .size(13.0),
-                                        )
-                                        .selectable(false)
-                                        .sense(egui::Sense::click()),
-                                    );
-                                    if r.clicked() {
-                                        ws_action = Some(WorkspaceAction::Create);
-                                    }
-                                },
-                            );
-                        });
-                        ui.add_space(4.0);
-
-                        let mut clicked_panel: Option<(usize, uuid::Uuid)> = None;
-
-                        for (i, (name, active)) in names.iter().enumerate() {
-                            let tc = if *active {
-                                Color32::WHITE
-                            } else {
-                                Color32::from_rgb(120, 120, 120)
-                            };
-
-                            // Workspace row
-                            let resp = ui.horizontal(|ui| {
-                                ui.set_min_height(22.0);
-                                // Arrow indicator (expanded for active)
-                                let arrow = if *active { "▾" } else { "▸" };
-                                ui.label(
-                                    egui::RichText::new(arrow)
-                                        .color(Color32::from_rgb(60, 60, 60))
-                                        .size(9.0),
-                                );
-                                // Color dot
-                                let (dr, _) = ui.allocate_exact_size(
-                                    egui::Vec2::splat(6.0),
-                                    egui::Sense::hover(),
-                                );
-                                let dc = if *active {
-                                    Color32::from_rgb(90, 130, 200)
-                                } else {
-                                    Color32::from_rgb(50, 50, 50)
-                                };
-                                ui.painter().circle_filled(dr.center(), 2.5, dc);
-                                ui.add_space(2.0);
-                                let label = if let Some(cwd) = &self.workspaces[i].cwd {
-                                    format!(
-                                        "{}",
-                                        cwd.file_name()
-                                            .map(|n| n.to_string_lossy())
-                                            .unwrap_or(std::borrow::Cow::Borrowed(name))
-                                    )
-                                } else {
-                                    name.clone()
-                                };
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(label).color(tc).size(11.0),
-                                    )
-                                    .selectable(false)
-                                    .sense(egui::Sense::click()),
-                                )
-                            });
-                            if resp.inner.clicked() && !*active {
-                                ws_action = Some(WorkspaceAction::Switch(i));
+                    for resp in responses {
+                        match resp {
+                            SidebarResponse::SwitchWorkspace(idx) => {
+                                self.switch_workspace(idx);
                             }
-                            resp.inner.context_menu(|ui| {
-                                if self.workspaces.len() > 1 && ui.button("Delete").clicked() {
-                                    ws_action = Some(WorkspaceAction::Delete(i));
-                                    ui.close_menu();
-                                }
-                            });
-
-                            // Dropdown: terminals for this workspace (only shown for active)
-                            if *active {
-                                for panel in &self.workspaces[i].panels {
-                                    let ptc = if panel.focused {
-                                        Color32::WHITE
-                                    } else {
-                                        Color32::from_rgb(100, 100, 100)
-                                    };
-                                    let pr = ui.horizontal(|ui| {
-                                        ui.set_min_height(20.0);
-                                        ui.add_space(18.0); // indent
-                                        let (dr, _) = ui.allocate_exact_size(
-                                            egui::Vec2::splat(5.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        let dot_c = if panel.is_alive() {
-                                            panel.color.linear_multiply(0.6)
-                                        } else {
-                                            Color32::from_rgb(40, 40, 40)
-                                        };
-                                        ui.painter().circle_filled(dr.center(), 2.0, dot_c);
-                                        ui.add_space(2.0);
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(&panel.title)
-                                                    .color(ptc)
-                                                    .size(10.0),
-                                            )
-                                            .selectable(false)
-                                            .sense(egui::Sense::click())
-                                            .truncate(),
-                                        )
-                                    });
-                                    if pr.inner.clicked() {
-                                        clicked_panel = Some((i, panel.id));
-                                    }
-                                }
-                                // + New terminal under this workspace
-                                let nr = ui.horizontal(|ui| {
-                                    ui.set_min_height(20.0);
-                                    ui.add_space(18.0);
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new("+ terminal")
-                                                .color(Color32::from_rgb(60, 60, 60))
-                                                .size(10.0),
-                                        )
-                                        .selectable(false)
-                                        .sense(egui::Sense::click()),
-                                    )
-                                });
-                                if nr.inner.clicked() {
-                                    spawn_terminal = true;
-                                }
+                            SidebarResponse::CreateWorkspace => {
+                                self.create_workspace_with_picker();
                             }
-
-                            ui.add_space(2.0);
-                        }
-
-                        // Handle panel click (pan to it)
-                        if let Some((_ws_idx, panel_id)) = clicked_panel {
-                            if let Some(p) = self.ws().panels.iter().find(|p| p.id == panel_id) {
-                                let center = p.rect().center();
-                                self.viewport.pan_to_center(
-                                    center,
-                                    self.current_canvas_rect(ctx.screen_rect()),
-                                );
-                            }
-                            if let Some(idx) =
-                                self.ws().panels.iter().position(|p| p.id == panel_id)
-                            {
-                                self.ws_mut().bring_to_front(idx);
-                            }
-                        }
-                    }
-
-                    // Process workspace actions
-                    if let Some(action) = ws_action {
-                        use crate::sidebar::workspace_list::WorkspaceAction;
-                        match action {
-                            WorkspaceAction::Switch(idx) => self.switch_workspace(idx),
-                            WorkspaceAction::Create => self.create_workspace_with_picker(),
-                            WorkspaceAction::Delete(idx) => {
+                            SidebarResponse::DeleteWorkspace(idx) => {
                                 if self.workspaces.len() > 1 {
                                     self.workspaces.remove(idx);
                                     if self.active_ws >= self.workspaces.len() {
@@ -533,22 +357,42 @@ impl eframe::App for VoidApp {
                                         self.workspaces[self.active_ws].viewport_zoom;
                                 }
                             }
+                            SidebarResponse::FocusPanel { panel_id } => {
+                                if let Some(p) =
+                                    self.ws().panels.iter().find(|p| p.id == panel_id)
+                                {
+                                    let center = p.rect().center();
+                                    self.viewport.pan_to_center(
+                                        center,
+                                        self.current_canvas_rect(ctx.screen_rect()),
+                                    );
+                                }
+                                if let Some(idx) =
+                                    self.ws().panels.iter().position(|p| p.id == panel_id)
+                                {
+                                    self.ws_mut().bring_to_front(idx);
+                                }
+                            }
+                            SidebarResponse::SpawnTerminal => {
+                                self.spawn_terminal();
+                            }
+                            SidebarResponse::RenamePanel(id) => {
+                                let title = self
+                                    .ws()
+                                    .panels
+                                    .iter()
+                                    .find(|p| p.id == id)
+                                    .map(|p| p.title.clone());
+                                if let Some(t) = title {
+                                    self.renaming_panel = Some(id);
+                                    self.rename_buf = t;
+                                }
+                            }
+                            SidebarResponse::ClosePanel(idx) => {
+                                self.ws_mut().close_panel(idx);
+                            }
                         }
                     }
-                    if spawn_terminal {
-                        self.spawn_terminal();
-                    }
-
-                    // Bottom
-                    ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                        ui.add_space(10.0);
-                        ui.label(
-                            egui::RichText::new("Ctrl+Shift+T new · Ctrl+B sidebar · Ctrl+M minimap")
-                                .color(Color32::from_rgb(50, 50, 50))
-                                .size(9.5),
-                        );
-                        ui.add_space(6.0);
-                    });
                 });
         }
 
