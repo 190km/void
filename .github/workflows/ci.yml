@@ -31,7 +31,7 @@ jobs:
             libxrandr-dev \
             pkg-config
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   test:
     strategy:
@@ -60,7 +60,7 @@ jobs:
             libxkbcommon-dev \
             libxrandr-dev \
             pkg-config
-      - run: cargo test
+      - run: cargo test --locked
 
   build:
     strategy:
@@ -96,4 +96,4 @@ jobs:
             libxkbcommon-dev \
             libxrandr-dev \
             pkg-config
-      - run: cargo build --release --target ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}

@@ -21,7 +21,7 @@ eframe = { version = "0.30", default-features = false, features = ["wgpu", "wayl
 egui = "0.30"
 
 # Terminal emulation
-alacritty_terminal = "0.24"
+alacritty_terminal = "0.25.1"
 portable-pty = "0.9"
 
 # Serialization

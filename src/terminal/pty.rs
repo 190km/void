@@ -124,11 +124,11 @@ impl PtyHandle {
                     Ok(0) => break,
                     Ok(n) => {
                         // Feed bytes to terminal parser
-                        let Ok(mut term) = term_clone.lock() else {
-                            break;
-                        };
-                        for byte in &buf[..n] {
-                            processor.advance(&mut *term, *byte);
+                        {
+                            let Ok(mut term) = term_clone.lock() else {
+                                break;
+                            };
+                            processor.advance(&mut *term, &buf[..n]);
                         }
 
                         // Process terminal events (outside of term lock)

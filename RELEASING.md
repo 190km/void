@@ -16,9 +16,9 @@ Run the local checks:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-cargo build --release
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked
+cargo build --release --locked
 ```
 
 Update:
@@ -29,7 +29,7 @@ Update:
 ## Cut a release
 
 ```bash
-git add Cargo.toml
+git add Cargo.toml Cargo.lock
 git commit -m "release: 0.1.0"
 git tag v0.1.0
 git push
