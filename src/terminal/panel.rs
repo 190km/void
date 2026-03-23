@@ -91,6 +91,9 @@ pub struct TerminalPanel {
     // Tracks where the user intends the panel to be during drag (unsnapped).
     // Snap is computed from this, so accumulated movement can escape snap zones.
     pub drag_virtual_pos: Option<Pos2>,
+    /// Same as drag_virtual_pos but for resize — tracks unsnapped size/position
+    /// so accumulated movement can escape snap zones naturally.
+    pub resize_virtual_rect: Option<Rect>,
     bell_flash_until: f64,
 }
 
@@ -209,6 +212,7 @@ impl TerminalPanel {
             last_click_time: 0.0,
             click_count: 0,
             drag_virtual_pos: None,
+            resize_virtual_rect: None,
             bell_flash_until: 0.0,
         }
     }
@@ -234,6 +238,7 @@ impl TerminalPanel {
             last_click_time: 0.0,
             click_count: 0,
             drag_virtual_pos: None,
+            resize_virtual_rect: None,
             bell_flash_until: 0.0,
         }
     }
@@ -1124,6 +1129,7 @@ impl TerminalPanel {
         );
     }
 
+    #[allow(dead_code)]
     pub fn apply_resize_left(&mut self, delta: Vec2) {
         // Left-edge resize: dragging left grows width, moves position
         let new_width = (self.size.x - delta.x).max(MIN_WIDTH);

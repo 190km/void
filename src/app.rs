@@ -665,8 +665,25 @@ impl eframe::App for VoidApp {
                         snap_guides = result.guides;
                     }
                     if ix.resizing {
-                        // Snap resize edges to other panels
-                        let resizing_rect = self.ws().panels[*idx].rect();
+                        // Track virtual (unsnapped) rect so accumulated movement
+                        // can escape snap zones — same pattern as drag_virtual_pos.
+                        {
+                            let panel = &mut self.ws_mut().panels[*idx];
+                            if panel.resize_virtual_rect().is_none() {
+                                panel.set_resize_virtual_rect(Some(panel.rect()));
+                            }
+                            let mut vr = panel.resize_virtual_rect().unwrap();
+                            if ix.resize_left {
+                                vr.min.x += ix.resize_delta.x;
+                                vr.max.y += ix.resize_delta.y;
+                            } else {
+                                vr.max.x += ix.resize_delta.x;
+                                vr.max.y += ix.resize_delta.y;
+                            }
+                            panel.set_resize_virtual_rect(Some(vr));
+                        }
+
+                        let vr = self.ws().panels[*idx].resize_virtual_rect().unwrap();
                         let others: Vec<egui::Rect> = self
                             .ws()
                             .panels
@@ -675,19 +692,36 @@ impl eframe::App for VoidApp {
                             .filter(|(i, _)| i != idx)
                             .map(|(_, p)| p.rect())
                             .collect();
+                        // Compute snap from virtual rect (delta=ZERO since vr already
+                        // contains the accumulated movement, same as drag).
                         let result = crate::canvas::snap::snap_resize(
-                            resizing_rect,
+                            vr,
                             &others,
-                            ix.resize_delta,
+                            egui::Vec2::ZERO,
                             ix.resize_left,
                         );
                         snap_guides = result.guides;
 
-                        if ix.resize_left {
-                            self.ws_mut().panels[*idx].apply_resize_left(result.delta);
-                        } else {
-                            self.ws_mut().panels[*idx].apply_resize(result.delta);
-                        }
+                        // Apply: virtual rect + snap adjustment → actual panel rect
+                        let snapped = egui::Rect::from_min_max(
+                            vr.min
+                                + egui::Vec2::new(
+                                    if ix.resize_left { result.delta.x } else { 0.0 },
+                                    0.0,
+                                ),
+                            vr.max
+                                + egui::Vec2::new(
+                                    if ix.resize_left { 0.0 } else { result.delta.x },
+                                    result.delta.y,
+                                ),
+                        );
+                        let panel = &mut self.ws_mut().panels[*idx];
+                        panel.set_position(snapped.min);
+                        let new_size = snapped.size();
+                        let clamped = egui::Vec2::new(new_size.x.max(400.0), new_size.y.max(280.0));
+                        // Use set_position + direct size set via apply_resize trick
+                        let current_size = panel.size();
+                        panel.apply_resize(clamped - current_size);
                     }
                     if let Some(action) = &ix.action {
                         match action {
@@ -699,6 +733,18 @@ impl eframe::App for VoidApp {
                         }
                     }
                 }
+                // Clear resize_virtual_rect for panels that aren't being resized
+                let resizing_indices: Vec<usize> = interactions
+                    .iter()
+                    .filter(|(_, ix)| ix.resizing)
+                    .map(|(idx, _)| *idx)
+                    .collect();
+                for (i, panel) in self.ws_mut().panels.iter_mut().enumerate() {
+                    if !resizing_indices.contains(&i) && panel.resize_virtual_rect().is_some() {
+                        panel.set_resize_virtual_rect(None);
+                    }
+                }
+
                 to_close.sort_unstable();
                 for idx in to_close.into_iter().rev() {
                     self.ws_mut().close_panel(idx);

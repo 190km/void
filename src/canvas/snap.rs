@@ -140,21 +140,14 @@ pub fn snap_resize(panel: Rect, others: &[Rect], delta: Vec2, resize_left: bool)
     let mut snap_dy: Option<(f32, f32)> = None;
     let mut guides = Vec::new();
 
-    // Which edges are moving?
-    let moving_x = if delta.x.abs() > f32::EPSILON {
-        Some(if resize_left {
-            panel.min.x + delta.x
-        } else {
-            panel.max.x + delta.x
-        })
+    // Which edges are being resized? When using virtual rect (delta=ZERO),
+    // always check edges since the virtual rect already has the movement baked in.
+    let moving_x = Some(if resize_left {
+        panel.min.x + delta.x
     } else {
-        None
-    };
-    let moving_y = if delta.y.abs() > f32::EPSILON {
-        Some(panel.max.y + delta.y)
-    } else {
-        None
-    };
+        panel.max.x + delta.x
+    });
+    let moving_y = Some(panel.max.y + delta.y);
 
     for other in others {
         if let Some(mx) = moving_x {

@@ -100,12 +100,25 @@ impl CanvasPanel {
         }
     }
 
+    pub fn resize_virtual_rect(&self) -> Option<Rect> {
+        match self {
+            Self::Terminal(t) => t.resize_virtual_rect,
+        }
+    }
+
+    pub fn set_resize_virtual_rect(&mut self, rect: Option<Rect>) {
+        match self {
+            Self::Terminal(t) => t.resize_virtual_rect = rect,
+        }
+    }
+
     pub fn apply_resize(&mut self, delta: Vec2) {
         match self {
             Self::Terminal(t) => t.apply_resize(delta),
         }
     }
 
+    #[allow(dead_code)]
     pub fn apply_resize_left(&mut self, delta: Vec2) {
         match self {
             Self::Terminal(t) => t.apply_resize_left(delta),
