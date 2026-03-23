@@ -26,6 +26,13 @@ Unicode True
 !define MUI_ICON "..\assets\icon.ico"
 !define MUI_UNICON "..\assets\icon.ico"
 
+; ── Finish page: launch app + shortcut checkboxes ───────────────────
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch Void Terminal"
+!define MUI_FINISHPAGE_SHOWREADME ""
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "Create Desktop Shortcut"
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcut
+
 ; ── Pages ───────────────────────────────────────────────────────────
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -42,18 +49,16 @@ Unicode True
 Section "Install"
   SetOutPath "$INSTDIR"
 
-  ; Main binary
+  ; Main binary + icon
   File "${APP_EXE}"
+  File /oname=void.ico "..\assets\icon.ico"
 
   ; Create uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
-  ; Desktop shortcut
-  CreateShortcut "$DESKTOP\Void.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
-
   ; Start Menu
   CreateDirectory "$SMPROGRAMS\Void"
-  CreateShortcut "$SMPROGRAMS\Void\Void.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+  CreateShortcut "$SMPROGRAMS\Void\Void.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\void.ico" 0
   CreateShortcut "$SMPROGRAMS\Void\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 
   ; Registry — install path + Add/Remove Programs
@@ -62,6 +67,8 @@ Section "Install"
     "DisplayName" "${APP_NAME}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Void" \
     "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Void" \
+    "DisplayIcon" '"$INSTDIR\void.ico"'
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Void" \
     "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Void" \
@@ -74,9 +81,15 @@ Section "Install"
     "NoRepair" 1
 SectionEnd
 
+; ── Desktop shortcut function (called from finish page checkbox) ────
+Function CreateDesktopShortcut
+  CreateShortcut "$DESKTOP\Void.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\void.ico" 0
+FunctionEnd
+
 ; ── Uninstall Section ───────────────────────────────────────────────
 Section "Uninstall"
   Delete "$INSTDIR\${APP_EXE}"
+  Delete "$INSTDIR\void.ico"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
