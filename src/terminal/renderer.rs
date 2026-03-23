@@ -12,9 +12,9 @@ use std::time::Duration;
 use crate::terminal::colors::{self, DEFAULT_BG};
 use crate::terminal::pty::EventProxy;
 
-pub const FONT_SIZE: f32 = 16.0;
-pub const PAD_X: f32 = 8.0;
-pub const PAD_Y: f32 = 4.0;
+pub const FONT_SIZE: f32 = 18.0;
+pub const PAD_X: f32 = 10.0;
+pub const PAD_Y: f32 = 6.0;
 const CELL_WIDTH_ESTIMATE: f32 = FONT_SIZE * 0.6;
 const CELL_HEIGHT_ESTIMATE: f32 = FONT_SIZE * 1.25;
 const CURSOR_BLINK_ON_SECONDS: f64 = 0.6;
