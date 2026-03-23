@@ -127,7 +127,7 @@ impl Sidebar {
                     UpdateStatus::Ready => {
                         let btn = ui.add(
                             egui::Button::new(
-                                egui::RichText::new("Install & restart")
+                                egui::RichText::new("\u{2913} Update & restart")
                                     .size(10.0)
                                     .color(Color32::from_rgb(130, 200, 130)),
                             )
@@ -136,7 +136,7 @@ impl Sidebar {
                             .rounding(4.0),
                         );
                         if btn.clicked() {
-                            update_checker.install_and_exit();
+                            update_checker.install_and_restart();
                         }
                     }
                     UpdateStatus::UpToDate | UpdateStatus::Checking => {

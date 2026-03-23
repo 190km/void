@@ -102,15 +102,28 @@ impl UpdateChecker {
         });
     }
 
-    /// Launch the downloaded installer and exit the app.
-    pub fn install_and_exit(&self) {
+    /// Silent install + relaunch: runs the NSIS installer with /S,
+    /// waits for it to finish, then relaunches the updated void.exe.
+    pub fn install_and_restart(&self) {
         let path = {
             let s = self.state.lock().unwrap();
             s.installer_path.clone()
         };
-        if let Some(path) = path {
-            let _ = std::process::Command::new(&path).spawn();
-            std::process::exit(0);
+        if let Some(installer_path) = path {
+            // Find where void.exe is currently installed
+            let current_exe = std::env::current_exe().unwrap_or_default();
+
+            std::thread::spawn(move || {
+                // Run installer silently — /S = silent, no UI
+                let _ = std::process::Command::new(&installer_path)
+                    .arg("/S")
+                    .status(); // blocks until installer finishes
+
+                // Relaunch the app from the same path
+                let _ = std::process::Command::new(&current_exe).spawn();
+
+                std::process::exit(0);
+            });
         }
     }
 }
