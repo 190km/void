@@ -27,9 +27,55 @@ impl Workspace {
             cwd,
             panels: Vec::new(),
             viewport_pan: Vec2::new(100.0, 50.0),
-            viewport_zoom: 0.65,
+            viewport_zoom: 0.75,
             next_z: 0,
             next_color: 0,
+        }
+    }
+
+    /// Restore a workspace from saved state, spawning terminal processes.
+    pub fn from_saved(
+        ctx: &egui::Context,
+        state: &crate::state::persistence::WorkspaceState,
+        colors: &[egui::Color32],
+    ) -> Self {
+        let cwd = state.cwd.clone();
+        let mut ws = Self {
+            id: Uuid::parse_str(&state.id).unwrap_or_else(|_| Uuid::new_v4()),
+            name: state.name.clone(),
+            cwd: cwd.clone(),
+            panels: Vec::new(),
+            viewport_pan: Vec2::new(state.viewport_pan[0], state.viewport_pan[1]),
+            viewport_zoom: state.viewport_zoom,
+            next_z: state.next_z,
+            next_color: state.next_color,
+        };
+
+        for panel_state in &state.panels {
+            let panel =
+                TerminalPanel::from_saved(ctx, panel_state, cwd.as_deref());
+            ws.panels.push(panel);
+        }
+
+        // If no panels were restored, spawn a default one
+        if ws.panels.is_empty() {
+            ws.spawn_terminal(ctx, colors);
+        }
+
+        ws
+    }
+
+    /// Snapshot the workspace layout for persistence.
+    pub fn to_saved(&self) -> crate::state::persistence::WorkspaceState {
+        crate::state::persistence::WorkspaceState {
+            id: self.id.to_string(),
+            name: self.name.clone(),
+            cwd: self.cwd.clone(),
+            panels: self.panels.iter().map(|p| p.to_saved()).collect(),
+            viewport_pan: [self.viewport_pan.x, self.viewport_pan.y],
+            viewport_zoom: self.viewport_zoom,
+            next_z: self.next_z,
+            next_color: self.next_color,
         }
     }
 
@@ -49,7 +95,7 @@ impl Workspace {
         let idx = self.panels.len();
         let col = (idx % 2) as f32;
         let row = (idx / 2) as f32;
-        let position = egui::Pos2::new(50.0 + col * 1060.0, 50.0 + row * 660.0);
+        let position = egui::Pos2::new(50.0 + col * 1180.0, 50.0 + row * 780.0);
 
         // Unfocus all existing panels FIRST
         for p in &mut self.panels {
@@ -59,7 +105,7 @@ impl Workspace {
         let mut panel = TerminalPanel::new_with_terminal(
             ctx,
             position,
-            Vec2::new(1000.0, 600.0),
+            Vec2::new(1120.0, 720.0),
             color,
             self.cwd.as_deref(),
         );
