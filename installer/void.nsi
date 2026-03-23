@@ -15,7 +15,7 @@
 !endif
 
 Name "${APP_NAME}"
-OutFile "void-${VERSION}-x86_64-setup.exe"
+OutFile "void-${VERSION}-windows-x64.exe"
 InstallDir "$LOCALAPPDATA\Programs\Void"
 InstallDirRegKey HKCU "Software\Void" "InstallDir"
 RequestExecutionLevel user

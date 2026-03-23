@@ -7,6 +7,7 @@ use crate::command_palette::CommandPalette;
 use crate::sidebar::{Sidebar, SidebarResponse, SIDEBAR_BG, SIDEBAR_BORDER, SIDEBAR_PADDING_H};
 use crate::state::workspace::Workspace;
 use crate::terminal::panel::PanelAction;
+use crate::update::UpdateChecker;
 
 const PANEL_COLORS: &[Color32] = &[
     Color32::from_rgb(90, 130, 200),
@@ -33,6 +34,7 @@ pub struct VoidApp {
     rename_buf: String,
     brand_texture: egui::TextureHandle,
     sidebar: Sidebar,
+    update_checker: UpdateChecker,
 }
 
 impl VoidApp {
@@ -71,6 +73,7 @@ impl VoidApp {
             rename_buf: String::new(),
             brand_texture,
             sidebar: Sidebar::default(),
+            update_checker: UpdateChecker::new(),
         }
     }
 
@@ -329,11 +332,13 @@ impl eframe::App for VoidApp {
                         .inner_margin(egui::Margin::symmetric(SIDEBAR_PADDING_H, 0.0)),
                 )
                 .show(ctx, |ui| {
+                    let update_state = self.update_checker.state();
                     let responses = self.sidebar.show(
                         ui,
                         &self.workspaces,
                         self.active_ws,
                         &self.brand_texture,
+                        &update_state,
                     );
                     for resp in responses {
                         match resp {

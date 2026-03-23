@@ -7,6 +7,7 @@ use egui::{Color32, Pos2, Rect, Vec2};
 use uuid::Uuid;
 
 use crate::state::workspace::Workspace;
+use crate::update::UpdateState;
 
 // ── Color palette (Tailwind neutral/zinc) ──────────────────────────────────
 
@@ -71,24 +72,58 @@ impl Sidebar {
         workspaces: &[Workspace],
         active_ws: usize,
         brand_texture: &egui::TextureHandle,
+        update_state: &UpdateState,
     ) -> Vec<SidebarResponse> {
         let mut responses = Vec::new();
 
         ui.spacing_mut().item_spacing.y = 0.0;
 
-        // ── Brand logo ─────────────────────────────────────────────────
+        // ── Brand logo + update button (justify-between) ────────────
         ui.add_space(14.0);
-        let logo_resp = ui.add(
-            egui::Image::new(egui::load::SizedTexture::new(
-                brand_texture.id(),
-                brand_texture.size_vec2(),
-            ))
-            .max_height(14.0)
-            .tint(Color32::from_rgb(140, 140, 140))
-            .sense(egui::Sense::hover()),
-        );
-        // Suppress default context menu on the logo area
-        logo_resp.context_menu(|_ui| {});
+        ui.horizontal(|ui| {
+            // Logo on the left
+            let logo_resp = ui.add(
+                egui::Image::new(egui::load::SizedTexture::new(
+                    brand_texture.id(),
+                    brand_texture.size_vec2(),
+                ))
+                .max_height(14.0)
+                .tint(Color32::from_rgb(140, 140, 140))
+                .sense(egui::Sense::hover()),
+            );
+            logo_resp.context_menu(|_ui| {});
+
+            // Update button on the right
+            if update_state.update_available {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label =
+                        format!("v{}", update_state.latest_version.as_deref().unwrap_or("?"));
+                    let btn = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(label)
+                                .size(10.0)
+                                .color(Color32::from_rgb(130, 200, 130)),
+                        )
+                        .fill(Color32::from_rgb(30, 45, 30))
+                        .stroke(egui::Stroke::new(0.5, Color32::from_rgb(60, 100, 60)))
+                        .rounding(4.0),
+                    );
+                    if btn.clicked() {
+                        if let Some(url) = &update_state.release_url {
+                            #[cfg(target_os = "windows")]
+                            let _ = std::process::Command::new("cmd")
+                                .args(["/C", "start", "", url])
+                                .spawn();
+                            #[cfg(target_os = "macos")]
+                            let _ = std::process::Command::new("open").arg(url).spawn();
+                            #[cfg(target_os = "linux")]
+                            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                        }
+                    }
+                    btn.on_hover_text("New version available — click to download");
+                });
+            }
+        });
         ui.add_space(14.0);
 
         // ── Tab bar ────────────────────────────────────────────────────

@@ -78,12 +78,12 @@ jobs:
           Copy-Item "target\x86_64-pc-windows-msvc\release\void.exe" "installer\void.exe"
           & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /DVERSION=$env:VERSION installer\void.nsi
           Write-Host "Installer created:"
-          Get-Item "installer\void-$env:VERSION-x86_64-setup.exe" | Select-Object Name, Length
+          Get-Item "installer\void-$env:VERSION-windows-x64.exe" | Select-Object Name, Length
 
       - name: Upload installer to release
         shell: bash
         run: |
-          gh release upload "v${VERSION}" "installer/void-${VERSION}-x86_64-setup.exe" --clobber
+          gh release upload "v${VERSION}" "installer/void-${VERSION}-windows-x64.exe" --clobber
 
   # ── Publish: draft → public (comme Handy après que tous les builds passent) ──
   publish-release:

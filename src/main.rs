@@ -9,6 +9,7 @@ mod sidebar;
 mod state;
 mod terminal;
 mod theme;
+mod update;
 mod utils;
 
 use anyhow::Result;
@@ -33,7 +34,7 @@ fn main() -> Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Void")
+            .with_title(format!("Void | v{}", env!("CARGO_PKG_VERSION")))
             .with_inner_size([1024.0, 640.0])
             .with_min_inner_size([640.0, 400.0])
             .with_icon(Arc::new(icon)),
