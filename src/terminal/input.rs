@@ -24,6 +24,12 @@ pub fn process_input(
     let mut output = InputResult::default();
 
     ctx.input(|input| {
+        // Check if a paste event exists (to avoid double-processing with Ctrl+V raw byte)
+        let has_paste_event = input
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Paste(_)));
+
         for event in &input.events {
             match event {
                 Event::Text(text) => {
@@ -44,6 +50,16 @@ pub fn process_input(
 
                     if should_copy_selection(modifiers, key, has_selection) {
                         output.copy_selection = true;
+                        continue;
+                    }
+
+                    // Skip raw Ctrl+V (0x16) when clipboard paste event is present
+                    if modifiers.ctrl
+                        && !modifiers.shift
+                        && !modifiers.alt
+                        && *key == Key::V
+                        && has_paste_event
+                    {
                         continue;
                     }
 
@@ -133,7 +149,14 @@ fn key_to_bytes(key: &Key, modifiers: &Modifiers, mode: InputMode) -> Option<Vec
     }
 
     match key {
-        Key::Enter => Some(b"\r".to_vec()),
+        Key::Enter => {
+            if modifiers.ctrl || modifiers.shift || modifiers.alt {
+                let param = modifier_param(modifiers);
+                Some(format!("\x1b[13;{}u", param).into_bytes())
+            } else {
+                Some(b"\r".to_vec())
+            }
+        }
         Key::Backspace => Some(b"\x7f".to_vec()),
         Key::Tab => {
             if modifiers.shift {

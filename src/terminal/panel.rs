@@ -7,9 +7,8 @@ use uuid::Uuid;
 
 const TITLE_BAR_HEIGHT: f32 = 36.0;
 const BORDER_RADIUS: f32 = 10.0;
-const RESIZE_HANDLE: f32 = 14.0;
-const MIN_WIDTH: f32 = 320.0;
-const MIN_HEIGHT: f32 = 220.0;
+const MIN_WIDTH: f32 = 400.0;
+const MIN_HEIGHT: f32 = 280.0;
 const SCROLLBAR_WIDTH: f32 = 8.0;
 const SCROLLBAR_GAP: f32 = 8.0;
 const SCROLLBAR_MARGIN: f32 = 6.0;
@@ -85,6 +84,8 @@ pub struct TerminalPanel {
     selecting: bool,
     scroll_remainder: f32,
     scrollbar_grab_offset: Option<f32>,
+    last_click_time: f64,
+    click_count: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +101,7 @@ pub struct PanelInteraction {
     pub drag_delta: Vec2,
     pub resizing: bool,
     pub resize_delta: Vec2,
+    pub resize_left: bool,
     pub action: Option<PanelAction>,
 }
 
@@ -198,6 +200,8 @@ impl TerminalPanel {
             selecting: false,
             scroll_remainder: 0.0,
             scrollbar_grab_offset: None,
+            last_click_time: 0.0,
+            click_count: 0,
         }
     }
 
@@ -219,6 +223,36 @@ impl TerminalPanel {
             selecting: false,
             scroll_remainder: 0.0,
             scrollbar_grab_offset: None,
+            last_click_time: 0.0,
+            click_count: 0,
+        }
+    }
+
+    /// Create a panel from saved state, spawning a new terminal process.
+    pub fn from_saved(
+        ctx: &egui::Context,
+        state: &crate::state::persistence::PanelState,
+        cwd: Option<&std::path::Path>,
+    ) -> Self {
+        let position = Pos2::new(state.position[0], state.position[1]);
+        let size = Vec2::new(state.size[0], state.size[1]);
+        let color = Color32::from_rgb(state.color[0], state.color[1], state.color[2]);
+
+        let mut panel = Self::new_with_terminal(ctx, position, size, color, cwd);
+        panel.z_index = state.z_index;
+        panel.focused = state.focused;
+        panel
+    }
+
+    /// Snapshot the panel layout for persistence (no PTY state).
+    pub fn to_saved(&self) -> crate::state::persistence::PanelState {
+        crate::state::persistence::PanelState {
+            title: self.title.clone(),
+            position: [self.position.x, self.position.y],
+            size: [self.size.x, self.size.y],
+            color: [self.color.r(), self.color.g(), self.color.b()],
+            z_index: self.z_index,
+            focused: self.focused,
         }
     }
 
@@ -277,18 +311,6 @@ impl TerminalPanel {
         }
     }
 
-    fn local_interactions_enabled(&self) -> bool {
-        let Some(pty) = &self.pty else {
-            return true;
-        };
-        let Ok(term) = pty.term.lock() else {
-            return true;
-        };
-
-        let mode = *term.mode();
-        !mode.intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE)
-    }
-
     pub fn scroll_hit_test(&self, canvas_pos: Pos2) -> bool {
         Self::terminal_body_rect(self.rect()).contains(canvas_pos)
     }
@@ -297,9 +319,6 @@ impl TerminalPanel {
         let Some(pty) = &self.pty else {
             return;
         };
-        if !self.local_interactions_enabled() {
-            return;
-        }
         if scroll_y == 0.0 {
             return;
         }
@@ -312,11 +331,28 @@ impl TerminalPanel {
         if lines == 0 {
             return;
         }
-
         self.scroll_remainder -= lines as f32 * row_height;
 
-        if let Ok(mut term) = pty.term.lock() {
-            term.scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
+        let in_alt_screen = self
+            .pty
+            .as_ref()
+            .and_then(|p| p.term.lock().ok())
+            .is_some_and(|t| t.mode().contains(TermMode::ALT_SCREEN));
+
+        if in_alt_screen {
+            // Alt screen: send arrow keys (for vim, less, etc.)
+            let key = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
+            let count = lines.unsigned_abs() as usize;
+            let mut bytes = Vec::with_capacity(count * 3);
+            for _ in 0..count {
+                bytes.extend_from_slice(key);
+            }
+            pty.write(&bytes);
+        } else {
+            // Normal mode: scroll display buffer
+            if let Ok(mut term) = pty.term.lock() {
+                term.scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
+            }
         }
     }
 
@@ -465,10 +501,10 @@ impl TerminalPanel {
             FG_DIM
         };
         painter.text(
-            Pos2::new(dot_x + 10.0, dot_y - 6.0),
+            Pos2::new(dot_x + 10.0, dot_y - 7.0),
             egui::Align2::LEFT_TOP,
             format!("{}{}", status, self.title),
-            egui::FontId::proportional(12.0),
+            egui::FontId::proportional(13.0),
             tc,
         );
 
@@ -558,8 +594,8 @@ impl TerminalPanel {
                     egui::Sense::click_and_drag(),
                 );
                 let thumb_hovered = scrollbar_resp.hovered()
-                    && ui
-                        .input(|i| i.pointer.hover_pos())
+                    && scrollbar_resp
+                        .hover_pos()
                         .is_some_and(|pos| thumb_rect.contains(pos));
                 let thumb_color = if thumb_hovered || scrollbar_resp.dragged() {
                     SCROLLBAR_THUMB_HOVER
@@ -567,10 +603,6 @@ impl TerminalPanel {
                     SCROLLBAR_THUMB
                 };
                 painter.rect_filled(thumb_rect, SCROLLBAR_WIDTH * 0.5, thumb_color);
-
-                if scrollbar_resp.hovered() || scrollbar_resp.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                }
 
                 if scrollbar_resp.clicked_by(egui::PointerButton::Primary) {
                     ix.clicked = true;
@@ -680,6 +712,76 @@ impl TerminalPanel {
 
         // ========== INTERACTIONS ==========
 
+        // Visual resize grip (bottom-right corner)
+        {
+            let grip_color = Color32::from_rgb(60, 60, 60);
+            let gx = pr.max.x - 5.0;
+            let gy = pr.max.y - 5.0;
+            for i in 0..3 {
+                let offset = i as f32 * 4.0;
+                painter.circle_filled(Pos2::new(gx - offset, gy), 1.2, grip_color);
+                if i > 0 {
+                    painter.circle_filled(Pos2::new(gx, gy - offset), 1.2, grip_color);
+                }
+                if i > 1 {
+                    painter.circle_filled(Pos2::new(gx - 4.0, gy - 4.0), 1.2, grip_color);
+                }
+            }
+        }
+
+        // Resize handles — extended outside panel for easier grabbing
+        let edge_out = 6.0;
+        let edge_in = 6.0;
+        let corner_size = edge_out + edge_in;
+
+        let rbr = Rect::from_min_max(
+            Pos2::new(pr.max.x - edge_in, pr.max.y - edge_in),
+            Pos2::new(pr.max.x + edge_out, pr.max.y + edge_out),
+        );
+        let rbl = Rect::from_min_max(
+            Pos2::new(pr.min.x - edge_out, pr.max.y - edge_in),
+            Pos2::new(pr.min.x + edge_in, pr.max.y + edge_out),
+        );
+        let rr = Rect::from_min_max(
+            Pos2::new(pr.max.x - edge_in, pr.min.y + TITLE_BAR_HEIGHT),
+            Pos2::new(pr.max.x + edge_out, pr.max.y - edge_in),
+        );
+        let rl = Rect::from_min_max(
+            Pos2::new(pr.min.x - edge_out, pr.min.y + TITLE_BAR_HEIGHT),
+            Pos2::new(pr.min.x + edge_in, pr.max.y - edge_in),
+        );
+        let rb = Rect::from_min_max(
+            Pos2::new(pr.min.x + corner_size, pr.max.y - edge_in),
+            Pos2::new(pr.max.x - corner_size, pr.max.y + edge_out),
+        );
+
+        // Register all resize interactions upfront
+        let brr_resp = ui.interact(rbr, egui::Id::new(self.id).with("rbr"), egui::Sense::drag());
+        let blr_resp = ui.interact(rbl, egui::Id::new(self.id).with("rbl"), egui::Sense::drag());
+        let rr_resp = ui.interact(rr, egui::Id::new(self.id).with("rr"), egui::Sense::drag());
+        let rl_resp = ui.interact(rl, egui::Id::new(self.id).with("rl"), egui::Sense::drag());
+        let rb_resp = ui.interact(rb, egui::Id::new(self.id).with("rb"), egui::Sense::drag());
+
+        // Process resize drags — PRIMARY BUTTON ONLY
+        if brr_resp.dragged_by(egui::PointerButton::Primary) {
+            ix.resizing = true;
+            ix.resize_delta = brr_resp.drag_delta();
+        } else if blr_resp.dragged_by(egui::PointerButton::Primary) {
+            ix.resizing = true;
+            ix.resize_left = true;
+            ix.resize_delta = blr_resp.drag_delta();
+        } else if rr_resp.dragged_by(egui::PointerButton::Primary) {
+            ix.resizing = true;
+            ix.resize_delta = Vec2::new(rr_resp.drag_delta().x, 0.0);
+        } else if rl_resp.dragged_by(egui::PointerButton::Primary) {
+            ix.resizing = true;
+            ix.resize_left = true;
+            ix.resize_delta = Vec2::new(rl_resp.drag_delta().x, 0.0);
+        } else if rb_resp.dragged_by(egui::PointerButton::Primary) {
+            ix.resizing = true;
+            ix.resize_delta = Vec2::new(0.0, rb_resp.drag_delta().y);
+        }
+
         // Body: click + drag (for selection) + focus
         let body_resp = ui.interact(
             content_rect,
@@ -693,18 +795,44 @@ impl TerminalPanel {
 
         if body_resp.clicked_by(egui::PointerButton::Primary) {
             ix.clicked = true;
-            self.selection = None; // Clear selection on click
-        }
 
-        if body_resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+            // Track click count for double/triple click
+            let now = ui.input(|i| i.time);
+            if now - self.last_click_time < 0.4 {
+                self.click_count = (self.click_count + 1).min(3);
+            } else {
+                self.click_count = 1;
+            }
+            self.last_click_time = now;
+
+            match self.click_count {
+                2 => {
+                    // Double-click: select word
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        if let Some((start, end)) = self.word_boundaries_at(col, row) {
+                            self.selection = Some((start, row, end, row));
+                        }
+                    }
+                }
+                3 => {
+                    // Triple-click: select entire line
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        let last_col = (self.last_cols as usize).saturating_sub(1);
+                        self.selection = Some((0, row, last_col, row));
+                    }
+                }
+                _ => {
+                    self.selection = None;
+                }
+            }
         }
 
         // Text selection via drag
         if local_interactions_enabled && body_resp.drag_started_by(egui::PointerButton::Primary) {
             ix.clicked = true;
             if let Some(pos) = body_resp.interact_pointer_pos() {
-                // interact_pointer_pos is already in canvas space (egui applies inverse transform)
                 let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                 self.selection = Some((col, row, col, row));
                 self.selecting = true;
@@ -714,7 +842,6 @@ impl TerminalPanel {
             && self.selecting
             && body_resp.dragged_by(egui::PointerButton::Primary)
         {
-            // Use hover_pos() from the response — it's in canvas space (transformed)
             if let Some(pos) = body_resp.hover_pos() {
                 let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                 if let Some(ref mut sel) = self.selection {
@@ -722,7 +849,6 @@ impl TerminalPanel {
                     sel.3 = row;
                 }
             } else if let Some(pos) = body_resp.interact_pointer_pos() {
-                // Fallback: interact_pointer_pos also in canvas space
                 let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                 if let Some(ref mut sel) = self.selection {
                     sel.2 = col;
@@ -749,57 +875,60 @@ impl TerminalPanel {
             ix.drag_delta = title_resp.drag_delta();
             ix.clicked = true;
         }
-        if title_resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
-        }
 
-        // Resize handles
-        let rbr = Rect::from_min_size(
-            Pos2::new(pr.max.x - RESIZE_HANDLE, pr.max.y - RESIZE_HANDLE),
-            Vec2::splat(RESIZE_HANDLE),
-        );
-        let rr = Rect::from_min_size(
-            Pos2::new(pr.max.x - RESIZE_HANDLE, pr.min.y + TITLE_BAR_HEIGHT),
-            Vec2::new(
-                RESIZE_HANDLE,
-                pr.height() - TITLE_BAR_HEIGHT - RESIZE_HANDLE,
-            ),
-        );
-        let rb = Rect::from_min_size(
-            Pos2::new(pr.min.x, pr.max.y - RESIZE_HANDLE),
-            Vec2::new(pr.width() - RESIZE_HANDLE, RESIZE_HANDLE),
-        );
-
-        let brr = ui.interact(rbr, egui::Id::new(self.id).with("rbr"), egui::Sense::drag());
-        if brr.dragged() {
-            ix.resizing = true;
-            ix.resize_delta = brr.drag_delta();
-        }
-        if !ix.resizing {
-            let rrs = ui.interact(rr, egui::Id::new(self.id).with("rr"), egui::Sense::drag());
-            if rrs.dragged() {
-                ix.resizing = true;
-                ix.resize_delta = Vec2::new(rrs.drag_delta().x, 0.0);
-            }
-        }
-        if !ix.resizing {
-            let rbs = ui.interact(rb, egui::Id::new(self.id).with("rb"), egui::Sense::drag());
-            if rbs.dragged() {
-                ix.resizing = true;
-                ix.resize_delta = Vec2::new(0.0, rbs.drag_delta().y);
-            }
-        }
-
-        let hp = ui.input(|i| i.pointer.hover_pos().unwrap_or_default());
-        if rbr.contains(hp) {
+        // Cursor icons — resize overrides body I-beam
+        if brr_resp.hovered() || brr_resp.dragged_by(egui::PointerButton::Primary) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-        } else if rr.contains(hp) {
+        } else if blr_resp.hovered() || blr_resp.dragged_by(egui::PointerButton::Primary) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNeSw);
+        } else if rr_resp.hovered() || rr_resp.dragged_by(egui::PointerButton::Primary) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        } else if rb.contains(hp) {
+        } else if rl_resp.hovered() || rl_resp.dragged_by(egui::PointerButton::Primary) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        } else if rb_resp.hovered() || rb_resp.dragged_by(egui::PointerButton::Primary) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        } else if body_resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
 
+        // Context menu with Copy / Paste / Select All
         body_resp.context_menu(|ui| {
+            let has_sel = self.selection.is_some();
+            if ui
+                .add_enabled(has_sel, egui::Button::new("Copy"))
+                .clicked()
+            {
+                if let Some(text) = self.selected_text() {
+                    ui.ctx().copy_text(text);
+                }
+                ui.close_menu();
+            }
+            if ui.button("Paste").clicked() {
+                if let Some(pty) = &self.pty {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            let mode = self.input_mode();
+                            if mode.bracketed_paste {
+                                let mut bytes = Vec::new();
+                                bytes.extend_from_slice(b"\x1b[200~");
+                                bytes.extend_from_slice(text.as_bytes());
+                                bytes.extend_from_slice(b"\x1b[201~");
+                                pty.write(&bytes);
+                            } else {
+                                pty.write(text.as_bytes());
+                            }
+                        }
+                    }
+                }
+                ui.close_menu();
+            }
+            if ui.button("Select All").clicked() {
+                let last_col = (self.last_cols as usize).saturating_sub(1);
+                let last_row = (self.last_rows as usize).saturating_sub(1);
+                self.selection = Some((0, 0, last_col, last_row));
+                ui.close_menu();
+            }
+            ui.separator();
             if ui.button("Rename").clicked() {
                 ix.action = Some(PanelAction::Rename);
                 ui.close_menu();
@@ -813,6 +942,47 @@ impl TerminalPanel {
         ix
     }
 
+    /// Find word boundaries at a given cell position.
+    fn word_boundaries_at(&self, col: usize, row: usize) -> Option<(usize, usize)> {
+        let pty = self.pty.as_ref()?;
+        let term = pty.term.lock().ok()?;
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::index::{Column, Point};
+        use alacritty_terminal::term::viewport_to_point;
+
+        let display_offset = term.grid().display_offset();
+        let cols = term.columns();
+        let point = viewport_to_point(display_offset, Point::new(row, Column(col)));
+        let c = term.grid()[point].c;
+
+        if c == ' ' || c == '\0' {
+            return None;
+        }
+
+        let is_word_char =
+            |ch: char| ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == '/';
+
+        let mut start = col;
+        while start > 0 {
+            let p = viewport_to_point(display_offset, Point::new(row, Column(start - 1)));
+            if !is_word_char(term.grid()[p].c) {
+                break;
+            }
+            start -= 1;
+        }
+
+        let mut end = col;
+        while end + 1 < cols {
+            let p = viewport_to_point(display_offset, Point::new(row, Column(end + 1)));
+            if !is_word_char(term.grid()[p].c) {
+                break;
+            }
+            end += 1;
+        }
+
+        Some((start, end))
+    }
+
     pub fn apply_drag(&mut self, delta: Vec2) {
         self.position += delta;
     }
@@ -821,6 +991,16 @@ impl TerminalPanel {
             (self.size.x + delta.x).max(MIN_WIDTH),
             (self.size.y + delta.y).max(MIN_HEIGHT),
         );
+    }
+
+    pub fn apply_resize_left(&mut self, delta: Vec2) {
+        // Left-edge resize: dragging left grows width, moves position
+        let new_width = (self.size.x - delta.x).max(MIN_WIDTH);
+        let actual_dx = self.size.x - new_width;
+        self.position.x += actual_dx;
+        self.size.x = new_width;
+        // Vertical component is normal (bottom edge)
+        self.size.y = (self.size.y + delta.y).max(MIN_HEIGHT);
     }
 }
 
