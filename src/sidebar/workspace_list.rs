@@ -49,7 +49,7 @@ pub fn draw_workspace_tree(
             TEXT_SECONDARY
         };
         painter.text(
-            Pos2::new(header_rect.left() + 2.0, header_rect.center().y),
+            Pos2::new(header_rect.left() + 14.0, header_rect.center().y),
             egui::Align2::LEFT_CENTER,
             &ws_label,
             egui::FontId::proportional(11.0),
@@ -66,6 +66,13 @@ pub fn draw_workspace_tree(
             egui::Id::new("ws_header").with(ws_idx),
             egui::Sense::click(),
         );
+        if header_resp.hovered() && !is_active {
+            let hover_rect = Rect::from_center_size(
+                header_click_rect.center(),
+                Vec2::new(header_click_rect.width(), ITEM_HEIGHT),
+            );
+            painter.rect_filled(hover_rect, ITEM_ROUNDING, HOVER_BG);
+        }
         if header_resp.clicked() && !is_active {
             responses.push(SidebarResponse::SwitchWorkspace(ws_idx));
         }
@@ -109,7 +116,7 @@ pub fn draw_workspace_tree(
         // ── Terminal items (only for active workspace) ───────────────
         if is_active {
             for (panel_idx, panel) in ws.panels.iter().enumerate() {
-                let is_focused = panel.focused;
+                let is_focused = panel.focused();
 
                 // Allocate row
                 let (item_rect, _) = ui.allocate_exact_size(
@@ -120,7 +127,7 @@ pub fn draw_workspace_tree(
                 let painter = ui.painter();
                 let resp = ui.interact(
                     item_rect,
-                    egui::Id::new("ws_panel").with(panel.id),
+                    egui::Id::new("ws_panel").with(panel.id()),
                     egui::Sense::click(),
                 );
 
@@ -134,7 +141,7 @@ pub fn draw_workspace_tree(
                 // Color dot
                 let dot_center = Pos2::new(item_rect.left() + 14.0, item_rect.center().y);
                 let dot_color = if panel.is_alive() {
-                    panel.color
+                    panel.color()
                 } else {
                     Color32::from_rgb(50, 50, 50)
                 };
@@ -146,10 +153,11 @@ pub fn draw_workspace_tree(
                 } else {
                     TEXT_SECONDARY
                 };
-                let display_title = if panel.title.len() > 34 {
-                    format!("{}...", &panel.title[..34])
+                let title = panel.title();
+                let display_title = if title.len() > 31 {
+                    format!("{}...", &title[..31])
                 } else {
-                    panel.title.clone()
+                    title.to_string()
                 };
                 painter.text(
                     Pos2::new(item_rect.left() + 26.0, item_rect.center().y),
@@ -172,13 +180,13 @@ pub fn draw_workspace_tree(
 
                 // Click → focus panel
                 if resp.clicked() {
-                    responses.push(SidebarResponse::FocusPanel { panel_id: panel.id });
+                    responses.push(SidebarResponse::FocusPanel { panel_id: panel.id() });
                 }
 
                 // Context menu
                 resp.context_menu(|ui| {
                     if ui.button("Rename").clicked() {
-                        responses.push(SidebarResponse::RenamePanel(panel.id));
+                        responses.push(SidebarResponse::RenamePanel(panel.id()));
                         ui.close_menu();
                     }
                     if ui.button("Close").clicked() {

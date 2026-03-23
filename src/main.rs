@@ -4,6 +4,7 @@ mod app;
 mod canvas;
 mod command_palette;
 mod config;
+mod panel;
 mod shortcuts;
 mod sidebar;
 mod state;

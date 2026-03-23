@@ -1,15 +1,15 @@
-// Flat terminal list — all terminals in current workspace
+// Flat panel list — all panels in current workspace
 
 use egui::{Color32, Pos2, Vec2};
 
+use crate::panel::CanvasPanel;
 use crate::sidebar::{
     SidebarResponse, HOVER_BG, ITEM_BG, ITEM_HEIGHT, ITEM_ROUNDING, TEXT_MUTED, TEXT_PRIMARY,
     TEXT_SECONDARY,
 };
-use crate::terminal::panel::TerminalPanel;
 
-/// Draw a flat list of terminals for the Terminals tab.
-pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[TerminalPanel]) -> Vec<SidebarResponse> {
+/// Draw a flat list of panels for the Terminals tab.
+pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[CanvasPanel]) -> Vec<SidebarResponse> {
     let mut responses = Vec::new();
     let available_width = ui.available_width();
 
@@ -29,7 +29,7 @@ pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[TerminalPanel]) -> Vec<Si
     ui.add_space(4.0);
 
     for (panel_idx, panel) in panels.iter().enumerate() {
-        let is_focused = panel.focused;
+        let is_focused = panel.focused();
 
         // Allocate row
         let (item_rect, _) = ui.allocate_exact_size(
@@ -40,7 +40,7 @@ pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[TerminalPanel]) -> Vec<Si
         let painter = ui.painter();
         let resp = ui.interact(
             item_rect,
-            egui::Id::new("term_item").with(panel.id),
+            egui::Id::new("term_item").with(panel.id()),
             egui::Sense::click(),
         );
 
@@ -54,7 +54,7 @@ pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[TerminalPanel]) -> Vec<Si
         // Color dot
         let dot_center = Pos2::new(item_rect.left() + 14.0, item_rect.center().y);
         let dot_color = if panel.is_alive() {
-            panel.color
+            panel.color()
         } else {
             Color32::from_rgb(50, 50, 50)
         };
@@ -65,7 +65,7 @@ pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[TerminalPanel]) -> Vec<Si
             painter.circle_stroke(
                 dot_center,
                 4.5,
-                egui::Stroke::new(0.5, panel.color.linear_multiply(0.3)),
+                egui::Stroke::new(0.5, panel.color().linear_multiply(0.3)),
             );
         }
 
@@ -75,10 +75,11 @@ pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[TerminalPanel]) -> Vec<Si
         } else {
             TEXT_SECONDARY
         };
-        let display_title = if panel.title.len() > 34 {
-            format!("{}...", &panel.title[..34])
+        let title = panel.title();
+        let display_title = if title.len() > 31 {
+            format!("{}...", &title[..31])
         } else {
-            panel.title.clone()
+            title.to_string()
         };
         painter.text(
             Pos2::new(item_rect.left() + 26.0, item_rect.center().y),
@@ -101,13 +102,13 @@ pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[TerminalPanel]) -> Vec<Si
 
         // Click → focus panel
         if resp.clicked() {
-            responses.push(SidebarResponse::FocusPanel { panel_id: panel.id });
+            responses.push(SidebarResponse::FocusPanel { panel_id: panel.id() });
         }
 
         // Context menu
         resp.context_menu(|ui| {
             if ui.button("Rename").clicked() {
-                responses.push(SidebarResponse::RenamePanel(panel.id));
+                responses.push(SidebarResponse::RenamePanel(panel.id()));
                 ui.close_menu();
             }
             if ui.button("Close").clicked() {
