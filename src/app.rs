@@ -40,6 +40,7 @@ pub struct VoidApp {
 impl VoidApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = cc.egui_ctx.clone();
+        Self::setup_fonts(&ctx);
 
         let brand_texture = {
             let png = include_bytes!("../assets/brand.png");
@@ -78,7 +79,7 @@ impl VoidApp {
                     vec![ws],
                     0,
                     true,
-                    true,
+                    false,
                     true,
                     Viewport {
                         pan: Vec2::new(100.0, 50.0),
@@ -102,6 +103,46 @@ impl VoidApp {
             sidebar: Sidebar::default(),
             update_checker: UpdateChecker::new(cc.egui_ctx.clone()),
         }
+    }
+
+    /// Load system fonts as fallback for better Unicode coverage (box-drawing, symbols, etc.)
+    fn setup_fonts(ctx: &egui::Context) {
+        let mut fonts = egui::FontDefinitions::default();
+
+        // System font paths with good Unicode coverage, in preference order
+        #[cfg(target_os = "windows")]
+        let fallback_paths: &[&str] = &[
+            "C:\\Windows\\Fonts\\seguisym.ttf", // Segoe UI Symbol
+            "C:\\Windows\\Fonts\\segoeui.ttf",  // Segoe UI
+        ];
+        #[cfg(target_os = "macos")]
+        let fallback_paths: &[&str] = &[
+            "/System/Library/Fonts/Apple Symbols.ttf",
+            "/System/Library/Fonts/Menlo.ttc",
+        ];
+        #[cfg(target_os = "linux")]
+        let fallback_paths: &[&str] = &[
+            "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+        ];
+
+        for (i, path) in fallback_paths.iter().enumerate() {
+            if let Ok(data) = std::fs::read(path) {
+                let name = format!("fallback_{}", i);
+                fonts
+                    .font_data
+                    .insert(name.clone(), egui::FontData::from_owned(data).into());
+                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                    family.push(name.clone());
+                }
+                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                    family.push(name);
+                }
+            }
+        }
+
+        ctx.set_fonts(fonts);
     }
 
     fn ws(&self) -> &Workspace {
@@ -169,8 +210,8 @@ impl VoidApp {
                     .ws()
                     .panels
                     .iter()
-                    .find(|p| p.focused)
-                    .map(|p| (p.id, p.title.clone()));
+                    .find(|p| p.focused())
+                    .map(|p| (p.id(), p.title().to_string()));
                 if let Some((id, title)) = found {
                     self.renaming_panel = Some(id);
                     self.rename_buf = title;
@@ -310,8 +351,8 @@ impl eframe::App for VoidApp {
 
         // Keyboard input to focused terminal
         if !self.command_palette.open && self.renaming_panel.is_none() {
-            for p in &self.ws().panels {
-                if p.focused {
+            for p in &mut self.ws_mut().panels {
+                if p.focused() {
                     p.handle_input(ctx);
                     break;
                 }
@@ -358,9 +399,9 @@ impl eframe::App for VoidApp {
                                 {
                                     let buf = self.rename_buf.clone();
                                     if let Some(p) =
-                                        self.ws_mut().panels.iter_mut().find(|p| p.id == rename_id)
+                                        self.ws_mut().panels.iter_mut().find(|p| p.id() == rename_id)
                                     {
-                                        p.title = buf;
+                                        p.set_title(buf);
                                     }
                                     close = true;
                                 }
@@ -421,7 +462,7 @@ impl eframe::App for VoidApp {
                                 }
                             }
                             SidebarResponse::FocusPanel { panel_id } => {
-                                if let Some(p) = self.ws().panels.iter().find(|p| p.id == panel_id)
+                                if let Some(p) = self.ws().panels.iter().find(|p| p.id() == panel_id)
                                 {
                                     let center = p.rect().center();
                                     self.viewport.pan_to_center(
@@ -430,7 +471,7 @@ impl eframe::App for VoidApp {
                                     );
                                 }
                                 if let Some(idx) =
-                                    self.ws().panels.iter().position(|p| p.id == panel_id)
+                                    self.ws().panels.iter().position(|p| p.id() == panel_id)
                                 {
                                     self.ws_mut().bring_to_front(idx);
                                 }
@@ -443,8 +484,8 @@ impl eframe::App for VoidApp {
                                     .ws()
                                     .panels
                                     .iter()
-                                    .find(|p| p.id == id)
-                                    .map(|p| p.title.clone());
+                                    .find(|p| p.id() == id)
+                                    .map(|p| p.title().to_string());
                                 if let Some(t) = title {
                                     self.renaming_panel = Some(id);
                                     self.rename_buf = t;
@@ -481,7 +522,7 @@ impl eframe::App for VoidApp {
                 .iter()
                 .enumerate()
                 .filter(|(_, panel)| panel.scroll_hit_test(pointer_canvas))
-                .max_by_key(|(_, panel)| panel.z_index)
+                .max_by_key(|(_, panel)| panel.z_index())
                 .map(|(idx, _)| idx)
         });
 
@@ -520,7 +561,7 @@ impl eframe::App for VoidApp {
                 // Unfocus when clicking empty canvas
                 if bg_resp.clicked_by(egui::PointerButton::Primary) {
                     for p in &mut self.ws_mut().panels {
-                        p.focused = false;
+                        p.set_focused(false);
                     }
                 }
 
@@ -563,7 +604,7 @@ impl eframe::App for VoidApp {
                 ui.allocate_rect(clip, egui::Sense::hover());
 
                 let mut order: Vec<usize> = (0..self.ws().panels.len()).collect();
-                order.sort_by_key(|&i| self.ws().panels[i].z_index);
+                order.sort_by_key(|&i| self.ws().panels[i].z_index());
 
                 let mut interactions = Vec::new();
                 for &idx in &order {
@@ -588,8 +629,21 @@ impl eframe::App for VoidApp {
                         self.ws_mut().bring_to_front(*idx);
                     }
                     if ix.dragging_title {
-                        // Collect other panel rects for snapping
-                        let moving = self.ws().panels[*idx].rect();
+                        // Track virtual (unsnapped) position so accumulated
+                        // movement can escape snap zones naturally.
+                        {
+                            let panel = &mut self.ws_mut().panels[*idx];
+                            if panel.drag_virtual_pos().is_none() {
+                                let pos = panel.position();
+                                panel.set_drag_virtual_pos(Some(pos));
+                            }
+                            let vp = panel.drag_virtual_pos().unwrap();
+                            panel.set_drag_virtual_pos(Some(vp + ix.drag_delta));
+                        }
+
+                        let virtual_pos = self.ws().panels[*idx].drag_virtual_pos().unwrap();
+                        let size = self.ws().panels[*idx].size();
+                        let virtual_rect = egui::Rect::from_min_size(virtual_pos, size);
                         let others: Vec<egui::Rect> = self
                             .ws()
                             .panels
@@ -598,8 +652,8 @@ impl eframe::App for VoidApp {
                             .filter(|(i, _)| i != idx)
                             .map(|(_, p)| p.rect())
                             .collect();
-                        let result = crate::canvas::snap::snap_drag(moving, &others, ix.drag_delta);
-                        self.ws_mut().panels[*idx].apply_drag(result.delta);
+                        let result = crate::canvas::snap::snap_drag(virtual_rect, &others, egui::Vec2::ZERO);
+                        self.ws_mut().panels[*idx].set_position(virtual_pos + result.delta);
                         snap_guides = result.guides;
                     }
                     if ix.resizing {
@@ -631,8 +685,8 @@ impl eframe::App for VoidApp {
                         match action {
                             PanelAction::Close => to_close.push(*idx),
                             PanelAction::Rename => {
-                                self.renaming_panel = Some(self.ws().panels[*idx].id);
-                                self.rename_buf = self.ws().panels[*idx].title.clone();
+                                self.renaming_panel = Some(self.ws().panels[*idx].id());
+                                self.rename_buf = self.ws().panels[*idx].title().to_string();
                             }
                         }
                     }
@@ -640,6 +694,20 @@ impl eframe::App for VoidApp {
                 to_close.sort_unstable();
                 for idx in to_close.into_iter().rev() {
                     self.ws_mut().close_panel(idx);
+                }
+
+                // Unfocus all panels when clicking empty canvas
+                if !interactions.iter().any(|(_, ix)| ix.clicked) {
+                    let canvas_clicked = ctx.input(|i| {
+                        i.pointer.button_clicked(egui::PointerButton::Primary)
+                            && i.pointer.latest_pos()
+                                .is_some_and(|pos| canvas_rect.contains(pos))
+                    });
+                    if canvas_clicked {
+                        for p in &mut self.ws_mut().panels {
+                            p.set_focused(false);
+                        }
+                    }
                 }
 
                 // Draw snap guides
@@ -698,5 +766,6 @@ impl eframe::App for VoidApp {
                     }
                 });
         }
+
     }
 }
