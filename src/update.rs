@@ -10,6 +10,7 @@ pub enum UpdateStatus {
     Available,
     Downloading,
     Ready,
+    Installing,
     Error(String),
 }
 
@@ -102,28 +103,61 @@ impl UpdateChecker {
         });
     }
 
-    /// Silent install + relaunch: runs the NSIS installer with /S,
-    /// waits for it to finish, then relaunches the updated void.exe.
+    /// Silent update: writes a helper script that waits for this process
+    /// to exit, runs the installer silently, then relaunches the app.
     pub fn install_and_restart(&self) {
-        let path = {
-            let s = self.state.lock().unwrap();
+        let state = Arc::clone(&self.state);
+        let ctx = self.ctx.clone();
+
+        let installer_path = {
+            let s = state.lock().unwrap();
             s.installer_path.clone()
         };
-        if let Some(installer_path) = path {
-            // Find where void.exe is currently installed
-            let current_exe = std::env::current_exe().unwrap_or_default();
 
-            std::thread::spawn(move || {
-                // Run installer silently — /S = silent, no UI
-                let _ = std::process::Command::new(&installer_path)
-                    .arg("/S")
-                    .status(); // blocks until installer finishes
+        let Some(installer_path) = installer_path else {
+            return;
+        };
 
-                // Relaunch the app from the same path
-                let _ = std::process::Command::new(&current_exe).spawn();
+        // Show "Installing..." immediately
+        if let Ok(mut s) = state.lock() {
+            s.status = UpdateStatus::Installing;
+        }
+        ctx.request_repaint();
 
-                std::process::exit(0);
-            });
+        let current_exe = std::env::current_exe().unwrap_or_default();
+        let pid = std::process::id();
+
+        // Write a batch script that:
+        // 1. Waits for this process to exit
+        // 2. Runs the installer silently
+        // 3. Relaunches the app
+        let script_path = std::env::temp_dir().join("void_update.cmd");
+        let script = format!(
+            r#"@echo off
+echo Waiting for Void to close...
+:wait
+tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL
+if %ERRORLEVEL%==0 (
+    timeout /t 1 /nobreak >NUL
+    goto wait
+)
+echo Installing update...
+start /wait "" "{installer}" /S
+echo Launching Void...
+start "" "{exe}"
+del "%~f0"
+"#,
+            pid = pid,
+            installer = installer_path.replace('/', "\\"),
+            exe = current_exe.display(),
+        );
+
+        if std::fs::write(&script_path, &script).is_ok() {
+            // Launch the script hidden and exit
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "/min", "", &script_path.to_string_lossy()])
+                .spawn();
+            std::process::exit(0);
         }
     }
 }
@@ -148,38 +182,46 @@ fn check_latest_release() -> Result<UpdateState, String> {
     let update_available = version_newer(latest, CURRENT_VERSION);
 
     // Find the right asset for this platform + architecture
-    let platform_suffix = if cfg!(target_os = "windows") {
-        if cfg!(target_arch = "aarch64") {
-            "windows-arm64.exe"
-        } else {
-            "windows-x64.exe"
-        }
-    } else if cfg!(target_os = "macos") {
-        if cfg!(target_arch = "aarch64") {
-            "macos-arm64.dmg"
-        } else {
-            "macos-x64.dmg"
-        }
-    } else if cfg!(target_arch = "aarch64") {
-        "linux-arm64.tar.gz"
-    } else {
-        "linux-x64.tar.gz"
-    };
-
     let download_url = json
         .get("assets")
         .and_then(|a| a.as_array())
         .and_then(|assets| {
             assets.iter().find_map(|asset| {
-                let name = asset.get("name")?.as_str()?;
-                if name.ends_with(platform_suffix) {
-                    asset
-                        .get("browser_download_url")
-                        .and_then(|u| u.as_str())
-                        .map(|s| s.to_string())
+                let name = asset.get("name")?.as_str()?.to_lowercase();
+                let dominated = asset
+                    .get("browser_download_url")
+                    .and_then(|u| u.as_str())
+                    .map(|s| s.to_string());
+
+                if cfg!(target_os = "windows") {
+                    // Match: void-*-windows-x64.exe or void-*-x86_64-setup.exe or any .exe
+                    if name.contains("windows") && name.ends_with(".exe") {
+                        return dominated;
+                    }
+                    if name.ends_with(".exe") && !name.contains("linux") && !name.contains("mac") {
+                        return dominated;
+                    }
+                } else if cfg!(target_os = "macos") {
+                    if name.contains("macos") && name.ends_with(".dmg") {
+                        let want_arm = cfg!(target_arch = "aarch64");
+                        if (want_arm && name.contains("arm64"))
+                            || (!want_arm && name.contains("x64"))
+                        {
+                            return dominated;
+                        }
+                    }
                 } else {
-                    None
+                    // Linux
+                    if name.contains("linux") && name.ends_with(".tar.gz") {
+                        let want_arm = cfg!(target_arch = "aarch64");
+                        if (want_arm && name.contains("arm64"))
+                            || (!want_arm && name.contains("x64"))
+                        {
+                            return dominated;
+                        }
+                    }
                 }
+                None
             })
         });
 

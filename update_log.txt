@@ -1,5 +1,0 @@
-   Compiling void-terminal v0.0.1 (C:\Users\bro\Desktop\void)
-error: failed to remove file `C:\Users\bro\Desktop\void\target\debug\void.exe`
-
-Caused by:
-  Accès refusé. (os error 5)

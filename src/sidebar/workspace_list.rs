@@ -146,10 +146,15 @@ pub fn draw_workspace_tree(
                 } else {
                     TEXT_SECONDARY
                 };
+                let display_title = if panel.title.len() > 34 {
+                    format!("{}...", &panel.title[..34])
+                } else {
+                    panel.title.clone()
+                };
                 painter.text(
                     Pos2::new(item_rect.left() + 26.0, item_rect.center().y),
                     egui::Align2::LEFT_CENTER,
-                    &panel.title,
+                    &display_title,
                     egui::FontId::proportional(12.0),
                     title_color,
                 );

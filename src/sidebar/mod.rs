@@ -98,24 +98,53 @@ impl Sidebar {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 match &update_state.status {
                     UpdateStatus::Available => {
-                        let label = format!(
-                            "\u{2913} v{}",
-                            update_state.latest_version.as_deref().unwrap_or("?")
+                        let size = Vec2::new(20.0, 20.0);
+                        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+
+                        let bg = if resp.hovered() {
+                            Color32::from_rgb(40, 58, 40)
+                        } else {
+                            Color32::from_rgb(30, 45, 30)
+                        };
+                        let p = ui.painter();
+                        p.rect_filled(rect, 4.0, bg);
+                        p.rect_stroke(
+                            rect,
+                            4.0,
+                            egui::Stroke::new(0.5, Color32::from_rgb(60, 100, 60)),
                         );
-                        let btn = ui.add(
-                            egui::Button::new(
-                                egui::RichText::new(label)
-                                    .size(10.0)
-                                    .color(Color32::from_rgb(130, 200, 130)),
-                            )
-                            .fill(Color32::from_rgb(30, 45, 30))
-                            .stroke(egui::Stroke::new(0.5, Color32::from_rgb(60, 100, 60)))
-                            .rounding(4.0),
+
+                        let cx = rect.center().x;
+                        let cy = rect.center().y;
+                        let s = 3.5;
+                        let stroke = egui::Stroke::new(1.5, Color32::from_rgb(130, 200, 130));
+                        p.line_segment(
+                            [Pos2::new(cx, cy - s), Pos2::new(cx, cy + s - 1.0)],
+                            stroke,
                         );
-                        if btn.clicked() {
+                        p.line_segment(
+                            [Pos2::new(cx - 3.0, cy + s - 3.0), Pos2::new(cx, cy + s)],
+                            stroke,
+                        );
+                        p.line_segment(
+                            [Pos2::new(cx + 3.0, cy + s - 3.0), Pos2::new(cx, cy + s)],
+                            stroke,
+                        );
+                        p.line_segment(
+                            [
+                                Pos2::new(cx - 4.0, cy + s + 1.5),
+                                Pos2::new(cx + 4.0, cy + s + 1.5),
+                            ],
+                            stroke,
+                        );
+
+                        if resp.clicked() {
                             update_checker.download();
                         }
-                        btn.on_hover_text("Click to download and install update");
+                        resp.on_hover_text(format!(
+                            "Update to v{}",
+                            update_state.latest_version.as_deref().unwrap_or("?")
+                        ));
                     }
                     UpdateStatus::Downloading => {
                         ui.label(
@@ -127,7 +156,7 @@ impl Sidebar {
                     UpdateStatus::Ready => {
                         let btn = ui.add(
                             egui::Button::new(
-                                egui::RichText::new("\u{2913} Update & restart")
+                                egui::RichText::new("Update")
                                     .size(10.0)
                                     .color(Color32::from_rgb(130, 200, 130)),
                             )
@@ -138,6 +167,14 @@ impl Sidebar {
                         if btn.clicked() {
                             update_checker.install_and_restart();
                         }
+                        btn.on_hover_text("Install update and restart");
+                    }
+                    UpdateStatus::Installing => {
+                        ui.label(
+                            egui::RichText::new("Installing...")
+                                .size(10.0)
+                                .color(Color32::from_rgb(130, 200, 130)),
+                        );
                     }
                     UpdateStatus::UpToDate | UpdateStatus::Checking => {
                         ui.label(
