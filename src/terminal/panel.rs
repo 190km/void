@@ -1,5 +1,7 @@
 // TerminalPanel — canvas space, TSTransform zoom, full terminal interaction.
 
+use std::sync::atomic::Ordering;
+
 use crate::terminal::pty::PtyHandle;
 use alacritty_terminal::term::TermMode;
 use egui::{Color32, Key, Modifiers, Pos2, Rect, Vec2};
@@ -86,6 +88,10 @@ pub struct TerminalPanel {
     scrollbar_grab_offset: Option<f32>,
     last_click_time: f64,
     click_count: u8,
+    // Tracks where the user intends the panel to be during drag (unsnapped).
+    // Snap is computed from this, so accumulated movement can escape snap zones.
+    pub drag_virtual_pos: Option<Pos2>,
+    bell_flash_until: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +208,8 @@ impl TerminalPanel {
             scrollbar_grab_offset: None,
             last_click_time: 0.0,
             click_count: 0,
+            drag_virtual_pos: None,
+            bell_flash_until: 0.0,
         }
     }
 
@@ -225,6 +233,8 @@ impl TerminalPanel {
             scrollbar_grab_offset: None,
             last_click_time: 0.0,
             click_count: 0,
+            drag_virtual_pos: None,
+            bell_flash_until: 0.0,
         }
     }
 
@@ -333,13 +343,24 @@ impl TerminalPanel {
         }
         self.scroll_remainder -= lines as f32 * row_height;
 
-        let in_alt_screen = self
+        let mode = self
             .pty
             .as_ref()
             .and_then(|p| p.term.lock().ok())
-            .is_some_and(|t| t.mode().contains(TermMode::ALT_SCREEN));
+            .map(|t| *t.mode())
+            .unwrap_or(TermMode::empty());
+        let in_alt_screen = mode.contains(TermMode::ALT_SCREEN);
+        let in_mouse_mode = mode.intersects(TermMode::MOUSE_MODE | TermMode::SGR_MOUSE);
 
-        if in_alt_screen {
+        if in_mouse_mode {
+            // Mouse mode: send SGR scroll events (button 64=up, 65=down)
+            let count = lines.unsigned_abs() as usize;
+            let btn = if lines > 0 { 64 } else { 65 };
+            for _ in 0..count {
+                let seq = format!("\x1b[<{};1;1M", btn);
+                pty.write(seq.as_bytes());
+            }
+        } else if in_alt_screen {
             // Alt screen: send arrow keys (for vim, less, etc.)
             let key = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
             let count = lines.unsigned_abs() as usize;
@@ -351,7 +372,17 @@ impl TerminalPanel {
         } else {
             // Normal mode: scroll display buffer
             if let Ok(mut term) = pty.term.lock() {
+                let before = term.grid().display_offset();
                 term.scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
+                let after = term.grid().display_offset();
+                // Only adjust selection by the actual scroll delta (0 if clamped at boundary)
+                let actual = after as i32 - before as i32;
+                if actual != 0 {
+                    if let Some(ref mut sel) = self.selection {
+                        sel.1 = (sel.1 as i32 + actual).max(0) as usize;
+                        sel.3 = (sel.3 as i32 + actual).max(0) as usize;
+                    }
+                }
             }
         }
     }
@@ -369,11 +400,18 @@ impl TerminalPanel {
             let delta = target as i32 - current as i32;
             if delta != 0 {
                 term.scroll_display(alacritty_terminal::grid::Scroll::Delta(delta));
+                let actual = term.grid().display_offset() as i32 - current as i32;
+                if actual != 0 {
+                    if let Some(ref mut sel) = self.selection {
+                        sel.1 = (sel.1 as i32 + actual).max(0) as usize;
+                        sel.3 = (sel.3 as i32 + actual).max(0) as usize;
+                    }
+                }
             }
         }
     }
 
-    pub fn handle_input(&self, ctx: &egui::Context) {
+    pub fn handle_input(&mut self, ctx: &egui::Context) {
         if !self.focused {
             return;
         }
@@ -390,7 +428,15 @@ impl TerminalPanel {
                 }
             }
             if !input.bytes.is_empty() {
+                // Any keyboard input snaps scroll back to bottom (standard terminal behavior)
+                if let Ok(mut term) = pty.term.lock() {
+                    let offset = term.grid().display_offset();
+                    if offset != 0 {
+                        term.scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+                    }
+                }
                 pty.write(&input.bytes);
+                self.selection = None;
             }
         }
     }
@@ -450,7 +496,21 @@ impl TerminalPanel {
         let mut ix = PanelInteraction::default();
         let pr = self.rect();
         let painter = ui.painter();
-        let border_color = if self.focused {
+        // Check for bell flash
+        let now = ui.input(|i| i.time);
+        if let Some(pty) = &self.pty {
+            if pty.bell_fired.swap(false, Ordering::Relaxed) {
+                self.bell_flash_until = now + 0.15;
+            }
+        }
+        let bell_active = now < self.bell_flash_until;
+        if bell_active {
+            ui.ctx().request_repaint();
+        }
+
+        let border_color = if bell_active {
+            Color32::from_rgb(255, 200, 80)
+        } else if self.focused {
             BORDER_FOCUS
         } else {
             BORDER_DEFAULT
@@ -515,20 +575,25 @@ impl TerminalPanel {
             egui::Id::new(self.id).with("close"),
             egui::Sense::click(),
         );
-        if close_resp.hovered() {
-            painter.circle_filled(close_center, 4.0, Color32::from_rgb(200, 60, 60));
-            let s = egui::Stroke::new(1.0, Color32::WHITE);
+        {
+            let (cross_color, cross_size) = if close_resp.hovered() {
+                painter.circle_filled(close_center, 8.0, Color32::from_rgb(200, 60, 60));
+                (Color32::WHITE, 3.5)
+            } else {
+                (Color32::from_rgb(100, 100, 100), 3.0)
+            };
+            let s = egui::Stroke::new(1.2, cross_color);
             painter.line_segment(
                 [
-                    Pos2::new(close_center.x - 1.5, close_center.y - 1.5),
-                    Pos2::new(close_center.x + 1.5, close_center.y + 1.5),
+                    Pos2::new(close_center.x - cross_size, close_center.y - cross_size),
+                    Pos2::new(close_center.x + cross_size, close_center.y + cross_size),
                 ],
                 s,
             );
             painter.line_segment(
                 [
-                    Pos2::new(close_center.x + 1.5, close_center.y - 1.5),
-                    Pos2::new(close_center.x - 1.5, close_center.y + 1.5),
+                    Pos2::new(close_center.x + cross_size, close_center.y - cross_size),
+                    Pos2::new(close_center.x - cross_size, close_center.y + cross_size),
                 ],
                 s,
             );
@@ -782,15 +847,11 @@ impl TerminalPanel {
             ix.resize_delta = Vec2::new(0.0, rb_resp.drag_delta().y);
         }
 
-        // Body: click + drag (for selection) + focus
+        // Body: click + drag (for selection or mouse forwarding) + focus
         let body_resp = ui.interact(
             content_rect,
             egui::Id::new(self.id).with("body"),
-            if local_interactions_enabled {
-                egui::Sense::click_and_drag()
-            } else {
-                egui::Sense::click()
-            },
+            egui::Sense::click_and_drag(),
         );
 
         if body_resp.clicked_by(egui::PointerButton::Primary) {
@@ -860,6 +921,65 @@ impl TerminalPanel {
             self.selecting = false;
         }
 
+        // Mouse forwarding to PTY in mouse mode (for TUI apps: htop, lazygit, vim, etc.)
+        if !local_interactions_enabled {
+            if let Some(pty) = &self.pty {
+                let mods = ui.input(|i| i.modifiers);
+                let mod_bits: u8 = if mods.shift { 4 } else { 0 }
+                    + if mods.alt { 8 } else { 0 }
+                    + if mods.ctrl { 16 } else { 0 };
+
+                // Helper: send SGR mouse event
+                let send_mouse = |btn: u8, col: usize, row: usize, press: bool| {
+                    let suffix = if press { 'M' } else { 'm' };
+                    let seq = format!("\x1b[<{};{};{}{}", btn + mod_bits, col + 1, row + 1, suffix);
+                    pty.write(seq.as_bytes());
+                };
+
+                // Left click press
+                if body_resp.clicked_by(egui::PointerButton::Primary)
+                    || body_resp.drag_started_by(egui::PointerButton::Primary)
+                {
+                    ix.clicked = true;
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        send_mouse(0, col, row, true);
+                    }
+                }
+                // Middle click
+                if body_resp.clicked_by(egui::PointerButton::Middle) {
+                    ix.clicked = true;
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        send_mouse(1, col, row, true);
+                        send_mouse(1, col, row, false);
+                    }
+                }
+                // Right click
+                if body_resp.clicked_by(egui::PointerButton::Secondary) {
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        send_mouse(2, col, row, true);
+                        send_mouse(2, col, row, false);
+                    }
+                }
+                // Mouse drag (motion with button held)
+                if body_resp.dragged_by(egui::PointerButton::Primary) {
+                    if let Some(pos) = body_resp.hover_pos().or(body_resp.interact_pointer_pos()) {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        send_mouse(32, col, row, true);
+                    }
+                }
+                // Click release
+                if body_resp.drag_stopped() {
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        send_mouse(0, col, row, false);
+                    }
+                }
+            }
+        }
+
         // Title: drag to move, click to focus
         let tb = Rect::from_min_size(pr.min, Vec2::new(pr.width(), TITLE_BAR_HEIGHT));
         let title_resp = ui.interact(
@@ -874,6 +994,8 @@ impl TerminalPanel {
             ix.dragging_title = true;
             ix.drag_delta = title_resp.drag_delta();
             ix.clicked = true;
+        } else {
+            self.drag_virtual_pos = None;
         }
 
         // Cursor icons — resize overrides body I-beam
@@ -881,9 +1003,9 @@ impl TerminalPanel {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
         } else if blr_resp.hovered() || blr_resp.dragged_by(egui::PointerButton::Primary) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNeSw);
-        } else if rr_resp.hovered() || rr_resp.dragged_by(egui::PointerButton::Primary) {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        } else if rl_resp.hovered() || rl_resp.dragged_by(egui::PointerButton::Primary) {
+        } else if rr_resp.hovered() || rr_resp.dragged_by(egui::PointerButton::Primary)
+            || rl_resp.hovered() || rl_resp.dragged_by(egui::PointerButton::Primary)
+        {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         } else if rb_resp.hovered() || rb_resp.dragged_by(egui::PointerButton::Primary) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -926,6 +1048,19 @@ impl TerminalPanel {
                 let last_col = (self.last_cols as usize).saturating_sub(1);
                 let last_row = (self.last_rows as usize).saturating_sub(1);
                 self.selection = Some((0, 0, last_col, last_row));
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Clear Scrollback").clicked() {
+                if let Some(pty) = &self.pty {
+                    pty.write(b"\x1b[3J");
+                }
+                ui.close_menu();
+            }
+            if ui.button("Reset Terminal").clicked() {
+                if let Some(pty) = &self.pty {
+                    pty.write(b"\x1bc");
+                }
                 ui.close_menu();
             }
             ui.separator();
@@ -983,9 +1118,6 @@ impl TerminalPanel {
         Some((start, end))
     }
 
-    pub fn apply_drag(&mut self, delta: Vec2) {
-        self.position += delta;
-    }
     pub fn apply_resize(&mut self, delta: Vec2) {
         self.size = Vec2::new(
             (self.size.x + delta.x).max(MIN_WIDTH),
