@@ -1,14 +1,11 @@
 // Minimap widget: small overlay showing all panels and current viewport
 
+use super::config::{
+    MINIMAP_BG, MINIMAP_HEIGHT, MINIMAP_PADDING, MINIMAP_VIEWPORT_BORDER, MINIMAP_WIDTH,
+};
 use crate::canvas::viewport::Viewport;
-use crate::terminal::panel::TerminalPanel;
+use crate::panel::CanvasPanel;
 use egui::{Color32, Pos2, Rect, Ui, Vec2};
-
-const MINIMAP_WIDTH: f32 = 200.0;
-const MINIMAP_HEIGHT: f32 = 150.0;
-const MINIMAP_PADDING: f32 = 10.0;
-const MINIMAP_BG: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 200);
-const VIEWPORT_BORDER: Color32 = Color32::from_rgb(100, 100, 100);
 
 /// Result of drawing the minimap.
 pub struct MinimapResult {
@@ -24,7 +21,7 @@ pub fn draw_minimap(
     ui: &Ui,
     viewport: &Viewport,
     screen_rect: Rect,
-    panels: &[TerminalPanel],
+    panels: &[CanvasPanel],
 ) -> MinimapResult {
     let mut result = MinimapResult {
         navigate_to: None,
@@ -138,7 +135,7 @@ pub fn draw_minimap(
         let mini_rect = Rect::from_min_max(mini_min, mini_max);
 
         // Use panel color but slightly dimmed
-        let color = panel.color.linear_multiply(0.7);
+        let color = panel.color().linear_multiply(0.7);
         painter.rect_filled(mini_rect, 1.0, color);
     }
 
@@ -146,7 +143,7 @@ pub fn draw_minimap(
     let vp_min = canvas_to_minimap(visible.min);
     let vp_max = canvas_to_minimap(visible.max);
     let vp_rect = Rect::from_min_max(vp_min, vp_max);
-    painter.rect_stroke(vp_rect, 1.0, egui::Stroke::new(1.5, VIEWPORT_BORDER));
+    painter.rect_stroke(vp_rect, 1.0, egui::Stroke::new(1.5, MINIMAP_VIEWPORT_BORDER));
 
     // Zoom label
     let zoom_text = format!("{:.0}%", viewport.zoom * 100.0);

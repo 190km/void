@@ -1,8 +1,7 @@
 // Snap guide engine — detects edge alignment between panels during drag
 
+use super::config::SNAP_THRESHOLD;
 use egui::{Rect, Vec2};
-
-const SNAP_THRESHOLD: f32 = 8.0;
 
 pub struct SnapGuide {
     pub vertical: bool, // true = vertical line (X alignment), false = horizontal (Y alignment)

@@ -18,8 +18,8 @@ impl Default for Viewport {
 }
 
 impl Viewport {
-    pub const ZOOM_MIN: f32 = 0.25;
-    pub const ZOOM_MAX: f32 = 4.0;
+    pub const ZOOM_MIN: f32 = super::config::ZOOM_MIN;
+    pub const ZOOM_MAX: f32 = super::config::ZOOM_MAX;
 
     /// Build TSTransform for the canvas layer (used with set_transform_layer).
     pub fn transform(&self, canvas_rect: Rect) -> TSTransform {

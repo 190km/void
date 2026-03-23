@@ -1,5 +1,6 @@
 // Canvas input: pan + zoom (inspired by Horizon's approach)
 
+use super::config::ZOOM_KEYBOARD_FACTOR;
 use super::viewport::Viewport;
 use egui::{self, Ui};
 
@@ -45,11 +46,11 @@ pub fn handle_canvas_input(
         if input.modifiers.ctrl {
             if input.key_pressed(egui::Key::Equals) || input.key_pressed(egui::Key::Plus) {
                 let center = screen_rect.center();
-                viewport.zoom_around(center, screen_rect, 1.15);
+                viewport.zoom_around(center, screen_rect, ZOOM_KEYBOARD_FACTOR);
             }
             if input.key_pressed(egui::Key::Minus) {
                 let center = screen_rect.center();
-                viewport.zoom_around(center, screen_rect, 1.0 / 1.15);
+                viewport.zoom_around(center, screen_rect, 1.0 / ZOOM_KEYBOARD_FACTOR);
             }
             if input.key_pressed(egui::Key::Num0) {
                 viewport.zoom = 1.0;
