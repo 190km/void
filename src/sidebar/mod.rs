@@ -92,7 +92,7 @@ impl Sidebar {
                 .tint(Color32::from_rgb(140, 140, 140))
                 .sense(egui::Sense::hover()),
             );
-            logo_resp.context_menu(|_ui| {});
+            let _ = logo_resp;
 
             // Update indicator on the right
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
