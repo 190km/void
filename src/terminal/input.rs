@@ -30,10 +30,23 @@ pub fn process_input(
             .iter()
             .any(|e| matches!(e, Event::Paste(_)));
 
+        // Check if any Ctrl/Alt key event exists this frame — if so, skip Text events
+        // to avoid sending raw characters alongside control sequences (e.g., Ctrl+W
+        // sending both 'w' text and \x17 key).
+        let has_ctrl_key = input.events.iter().any(|e| matches!(e, Event::Key {
+            pressed: true,
+            modifiers: Modifiers { ctrl: true, .. } | Modifiers { alt: true, .. },
+            ..
+        }));
+
         for event in &input.events {
             match event {
                 Event::Text(text) => {
-                    // Regular text input is emitted as text events.
+                    // Skip text events when Ctrl/Alt key events are present (avoids
+                    // double-send on Windows where WM_CHAR fires alongside WM_KEYDOWN).
+                    if has_ctrl_key {
+                        continue;
+                    }
                     if !input.modifiers.ctrl && !input.modifiers.alt {
                         output.bytes.extend_from_slice(text.as_bytes());
                     }
@@ -150,14 +163,23 @@ fn key_to_bytes(key: &Key, modifiers: &Modifiers, mode: InputMode) -> Option<Vec
 
     match key {
         Key::Enter => {
-            if modifiers.ctrl || modifiers.shift || modifiers.alt {
-                let param = modifier_param(modifiers);
-                Some(format!("\x1b[13;{}u", param).into_bytes())
+            if modifiers.alt {
+                Some(b"\x1b\r".to_vec()) // Alt+Enter: ESC + CR
+            } else if modifiers.shift {
+                Some(b"\n".to_vec()) // Shift+Enter: newline (multiline in modern shells)
             } else {
-                Some(b"\r".to_vec())
+                Some(b"\r".to_vec()) // Enter: carriage return
             }
         }
-        Key::Backspace => Some(b"\x7f".to_vec()),
+        Key::Backspace => {
+            if modifiers.ctrl {
+                Some(b"\x17".to_vec()) // Ctrl+W — delete word (readline standard)
+            } else if modifiers.alt {
+                Some(b"\x1b\x7f".to_vec()) // Alt+Backspace — delete word
+            } else {
+                Some(b"\x7f".to_vec())
+            }
+        }
         Key::Tab => {
             if modifiers.shift {
                 Some(b"\x1b[Z".to_vec())
@@ -202,22 +224,36 @@ fn key_to_bytes(key: &Key, modifiers: &Modifiers, mode: InputMode) -> Option<Vec
             modifiers,
             mode.app_cursor,
         )),
-        Key::PageUp => Some(b"\x1b[5~".to_vec()),
-        Key::PageDown => Some(b"\x1b[6~".to_vec()),
-        Key::Insert => Some(b"\x1b[2~".to_vec()),
-        Key::Delete => Some(b"\x1b[3~".to_vec()),
-        Key::F1 => Some(b"\x1bOP".to_vec()),
-        Key::F2 => Some(b"\x1bOQ".to_vec()),
-        Key::F3 => Some(b"\x1bOR".to_vec()),
-        Key::F4 => Some(b"\x1bOS".to_vec()),
-        Key::F5 => Some(b"\x1b[15~".to_vec()),
-        Key::F6 => Some(b"\x1b[17~".to_vec()),
-        Key::F7 => Some(b"\x1b[18~".to_vec()),
-        Key::F8 => Some(b"\x1b[19~".to_vec()),
-        Key::F9 => Some(b"\x1b[20~".to_vec()),
-        Key::F10 => Some(b"\x1b[21~".to_vec()),
-        Key::F11 => Some(b"\x1b[23~".to_vec()),
-        Key::F12 => Some(b"\x1b[24~".to_vec()),
+        Key::PageUp => Some(tilde_key_with_mods(b"5", modifiers)),
+        Key::PageDown => Some(tilde_key_with_mods(b"6", modifiers)),
+        Key::Insert => Some(tilde_key_with_mods(b"2", modifiers)),
+        Key::Delete => {
+            if modifiers.ctrl {
+                Some(b"\x1bd".to_vec()) // Ctrl+Delete: ESC d — readline delete-word-forward
+            } else {
+                Some(tilde_key_with_mods(b"3", modifiers))
+            }
+        }
+        Key::F1 => Some(fkey_sequence(b"P", b"11", modifiers, true)),
+        Key::F2 => Some(fkey_sequence(b"Q", b"12", modifiers, true)),
+        Key::F3 => Some(fkey_sequence(b"R", b"13", modifiers, true)),
+        Key::F4 => Some(fkey_sequence(b"S", b"14", modifiers, true)),
+        Key::F5 => Some(fkey_sequence(b"15", b"15", modifiers, false)),
+        Key::F6 => Some(fkey_sequence(b"17", b"17", modifiers, false)),
+        Key::F7 => Some(fkey_sequence(b"18", b"18", modifiers, false)),
+        Key::F8 => Some(fkey_sequence(b"19", b"19", modifiers, false)),
+        Key::F9 => Some(fkey_sequence(b"20", b"20", modifiers, false)),
+        Key::F10 => Some(fkey_sequence(b"21", b"21", modifiers, false)),
+        Key::F11 => Some(fkey_sequence(b"23", b"23", modifiers, false)),
+        Key::F12 => Some(fkey_sequence(b"24", b"24", modifiers, false)),
+        Key::F13 => Some(fkey_sequence(b"25", b"25", modifiers, false)),
+        Key::F14 => Some(fkey_sequence(b"26", b"26", modifiers, false)),
+        Key::F15 => Some(fkey_sequence(b"28", b"28", modifiers, false)),
+        Key::F16 => Some(fkey_sequence(b"29", b"29", modifiers, false)),
+        Key::F17 => Some(fkey_sequence(b"31", b"31", modifiers, false)),
+        Key::F18 => Some(fkey_sequence(b"32", b"32", modifiers, false)),
+        Key::F19 => Some(fkey_sequence(b"33", b"33", modifiers, false)),
+        Key::F20 => Some(fkey_sequence(b"34", b"34", modifiers, false)),
         Key::Space => {
             if modifiers.ctrl {
                 Some(vec![0x00])
@@ -226,6 +262,62 @@ fn key_to_bytes(key: &Key, modifiers: &Modifiers, mode: InputMode) -> Option<Vec
             }
         }
         _ => None,
+    }
+}
+
+/// CSI tilde key with optional modifier: \x1b[num~ or \x1b[num;mod~
+fn tilde_key_with_mods(num: &[u8], modifiers: &Modifiers) -> Vec<u8> {
+    let m = modifier_param(modifiers);
+    let mut seq = b"\x1b[".to_vec();
+    seq.extend_from_slice(num);
+    if m > 1 {
+        seq.push(b';');
+        seq.extend_from_slice(m.to_string().as_bytes());
+    }
+    seq.push(b'~');
+    seq
+}
+
+/// Generate F-key sequence with optional modifier encoding.
+/// F1-F4 use SS3 format (\x1bOP) without modifiers, CSI format (\x1b[1;modP) with modifiers.
+/// F5+ use CSI tilde format (\x1b[15~) without modifiers, (\x1b[15;mod~) with modifiers.
+fn fkey_sequence(
+    suffix: &[u8],
+    csi_num: &[u8],
+    modifiers: &Modifiers,
+    is_ss3: bool,
+) -> Vec<u8> {
+    let m = modifier_param(modifiers);
+    if m == 1 {
+        // No modifiers
+        if is_ss3 {
+            // SS3 format: \x1bOP
+            let mut seq = b"\x1bO".to_vec();
+            seq.extend_from_slice(suffix);
+            seq
+        } else {
+            // CSI tilde format: \x1b[15~
+            let mut seq = b"\x1b[".to_vec();
+            seq.extend_from_slice(csi_num);
+            seq.push(b'~');
+            seq
+        }
+    } else {
+        // With modifiers: always CSI format \x1b[num;modX or \x1b[1;modX
+        let mut seq = b"\x1b[".to_vec();
+        if is_ss3 {
+            seq.extend_from_slice(b"1;");
+        } else {
+            seq.extend_from_slice(csi_num);
+            seq.push(b';');
+        }
+        seq.extend_from_slice(m.to_string().as_bytes());
+        if is_ss3 {
+            seq.extend_from_slice(suffix);
+        } else {
+            seq.push(b'~');
+        }
+        seq
     }
 }
 
