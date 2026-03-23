@@ -54,19 +54,46 @@ impl VoidApp {
             )
         };
 
-        let mut ws = Workspace::new("Default", None);
-        ws.spawn_terminal(&ctx, PANEL_COLORS);
+        // Try to restore saved layout, otherwise create a default workspace
+        let (workspaces, active_ws, sidebar_visible, show_grid, show_minimap, viewport) =
+            if let Some(saved) = crate::state::persistence::load_state() {
+                let wss: Vec<Workspace> = saved
+                    .workspaces
+                    .iter()
+                    .map(|ws_state| Workspace::from_saved(&ctx, ws_state, PANEL_COLORS))
+                    .collect();
+                let active = saved.active_ws.min(wss.len().saturating_sub(1));
+                let vp = Viewport {
+                    pan: Vec2::new(
+                        wss[active].viewport_pan.x,
+                        wss[active].viewport_pan.y,
+                    ),
+                    zoom: wss[active].viewport_zoom,
+                };
+                (wss, active, saved.sidebar_visible, saved.show_grid, saved.show_minimap, vp)
+            } else {
+                let mut ws = Workspace::new("Default", None);
+                ws.spawn_terminal(&ctx, PANEL_COLORS);
+                (
+                    vec![ws],
+                    0,
+                    true,
+                    true,
+                    true,
+                    Viewport {
+                        pan: Vec2::new(100.0, 50.0),
+                        zoom: 0.75,
+                    },
+                )
+            };
 
         Self {
-            workspaces: vec![ws],
-            active_ws: 0,
-            viewport: Viewport {
-                pan: Vec2::new(100.0, 50.0),
-                zoom: 0.65,
-            },
-            sidebar_visible: true,
-            show_grid: true,
-            show_minimap: true,
+            workspaces,
+            active_ws,
+            viewport,
+            sidebar_visible,
+            show_grid,
+            show_minimap,
             ctx: Some(ctx),
             command_palette: CommandPalette::default(),
             renaming_panel: None,
@@ -229,7 +256,37 @@ impl VoidApp {
     }
 }
 
+impl VoidApp {
+    fn snapshot_state(&self) -> crate::state::persistence::AppState {
+        // Save current viewport into the active workspace snapshot
+        let workspaces: Vec<_> = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(i, ws)| {
+                let mut saved = ws.to_saved();
+                if i == self.active_ws {
+                    saved.viewport_pan = [self.viewport.pan.x, self.viewport.pan.y];
+                    saved.viewport_zoom = self.viewport.zoom;
+                }
+                saved
+            })
+            .collect();
+        crate::state::persistence::AppState {
+            workspaces,
+            active_ws: self.active_ws,
+            sidebar_visible: self.sidebar_visible,
+            show_grid: self.show_grid,
+            show_minimap: self.show_minimap,
+        }
+    }
+}
+
 impl eframe::App for VoidApp {
+    fn on_exit(&mut self) {
+        crate::state::persistence::save_state(&self.snapshot_state());
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.ctx.is_none() {
             self.ctx = Some(ctx.clone());
@@ -459,20 +516,6 @@ impl eframe::App for VoidApp {
                     crate::canvas::grid::draw_dot_grid(ui, &self.viewport, canvas_rect);
                 }
 
-                if self.show_minimap {
-                    let minimap = crate::canvas::minimap::draw_minimap(
-                        ui,
-                        &self.viewport,
-                        canvas_rect,
-                        &self.ws().panels,
-                    );
-                    if let Some(nav) = minimap.navigate_to {
-                        self.viewport.pan_to_center(nav, canvas_rect);
-                    }
-                    if minimap.hide_clicked {
-                        self.show_minimap = false;
-                    }
-                }
 
                 // Unfocus when clicking empty canvas
                 if bg_resp.clicked_by(egui::PointerButton::Primary) {
@@ -560,7 +603,29 @@ impl eframe::App for VoidApp {
                         snap_guides = result.guides;
                     }
                     if ix.resizing {
-                        self.ws_mut().panels[*idx].apply_resize(ix.resize_delta);
+                        // Snap resize edges to other panels
+                        let resizing_rect = self.ws().panels[*idx].rect();
+                        let others: Vec<egui::Rect> = self
+                            .ws()
+                            .panels
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| i != idx)
+                            .map(|(_, p)| p.rect())
+                            .collect();
+                        let result = crate::canvas::snap::snap_resize(
+                            resizing_rect,
+                            &others,
+                            ix.resize_delta,
+                            ix.resize_left,
+                        );
+                        snap_guides = result.guides;
+
+                        if ix.resize_left {
+                            self.ws_mut().panels[*idx].apply_resize_left(result.delta);
+                        } else {
+                            self.ws_mut().panels[*idx].apply_resize(result.delta);
+                        }
                     }
                     if let Some(action) = &ix.action {
                         match action {
@@ -601,5 +666,37 @@ impl eframe::App for VoidApp {
                     }
                 }
             });
+
+        // --- Minimap overlay ---
+        // Drawn in a small foreground area covering only the minimap rect,
+        // so it doesn't block terminal interactions.
+        if self.show_minimap {
+            let mm_w = 220.0;
+            let mm_h = 170.0;
+            let mm_pos = Pos2::new(
+                canvas_rect.max.x - mm_w,
+                canvas_rect.max.y - mm_h,
+            );
+            egui::Area::new(egui::Id::new("minimap_overlay"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(mm_pos)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    ui.set_clip_rect(canvas_rect);
+                    ui.allocate_exact_size(Vec2::new(mm_w, mm_h), egui::Sense::hover());
+                    let minimap = crate::canvas::minimap::draw_minimap(
+                        ui,
+                        &self.viewport,
+                        canvas_rect,
+                        &self.ws().panels,
+                    );
+                    if let Some(nav) = minimap.navigate_to {
+                        self.viewport.pan_to_center(nav, canvas_rect);
+                    }
+                    if minimap.hide_clicked {
+                        self.show_minimap = false;
+                    }
+                });
+        }
     }
 }
