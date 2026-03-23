@@ -65,13 +65,17 @@ impl VoidApp {
                     .collect();
                 let active = saved.active_ws.min(wss.len().saturating_sub(1));
                 let vp = Viewport {
-                    pan: Vec2::new(
-                        wss[active].viewport_pan.x,
-                        wss[active].viewport_pan.y,
-                    ),
+                    pan: Vec2::new(wss[active].viewport_pan.x, wss[active].viewport_pan.y),
                     zoom: wss[active].viewport_zoom,
                 };
-                (wss, active, saved.sidebar_visible, saved.show_grid, saved.show_minimap, vp)
+                (
+                    wss,
+                    active,
+                    saved.sidebar_visible,
+                    saved.show_grid,
+                    saved.show_minimap,
+                    vp,
+                )
             } else {
                 let mut ws = Workspace::new("Default", None);
                 ws.spawn_terminal(&ctx, PANEL_COLORS);
@@ -398,8 +402,11 @@ impl eframe::App for VoidApp {
                                     || ui.input(|i| i.key_pressed(egui::Key::Enter))
                                 {
                                     let buf = self.rename_buf.clone();
-                                    if let Some(p) =
-                                        self.ws_mut().panels.iter_mut().find(|p| p.id() == rename_id)
+                                    if let Some(p) = self
+                                        .ws_mut()
+                                        .panels
+                                        .iter_mut()
+                                        .find(|p| p.id() == rename_id)
                                     {
                                         p.set_title(buf);
                                     }
@@ -462,7 +469,8 @@ impl eframe::App for VoidApp {
                                 }
                             }
                             SidebarResponse::FocusPanel { panel_id } => {
-                                if let Some(p) = self.ws().panels.iter().find(|p| p.id() == panel_id)
+                                if let Some(p) =
+                                    self.ws().panels.iter().find(|p| p.id() == panel_id)
                                 {
                                     let center = p.rect().center();
                                     self.viewport.pan_to_center(
@@ -556,7 +564,6 @@ impl eframe::App for VoidApp {
                 if self.show_grid {
                     crate::canvas::grid::draw_dot_grid(ui, &self.viewport, canvas_rect);
                 }
-
 
                 // Unfocus when clicking empty canvas
                 if bg_resp.clicked_by(egui::PointerButton::Primary) {
@@ -652,7 +659,8 @@ impl eframe::App for VoidApp {
                             .filter(|(i, _)| i != idx)
                             .map(|(_, p)| p.rect())
                             .collect();
-                        let result = crate::canvas::snap::snap_drag(virtual_rect, &others, egui::Vec2::ZERO);
+                        let result =
+                            crate::canvas::snap::snap_drag(virtual_rect, &others, egui::Vec2::ZERO);
                         self.ws_mut().panels[*idx].set_position(virtual_pos + result.delta);
                         snap_guides = result.guides;
                     }
@@ -700,7 +708,8 @@ impl eframe::App for VoidApp {
                 if !interactions.iter().any(|(_, ix)| ix.clicked) {
                     let canvas_clicked = ctx.input(|i| {
                         i.pointer.button_clicked(egui::PointerButton::Primary)
-                            && i.pointer.latest_pos()
+                            && i.pointer
+                                .latest_pos()
                                 .is_some_and(|pos| canvas_rect.contains(pos))
                     });
                     if canvas_clicked {
@@ -741,10 +750,7 @@ impl eframe::App for VoidApp {
         if self.show_minimap {
             let mm_w = 220.0;
             let mm_h = 170.0;
-            let mm_pos = Pos2::new(
-                canvas_rect.max.x - mm_w,
-                canvas_rect.max.y - mm_h,
-            );
+            let mm_pos = Pos2::new(canvas_rect.max.x - mm_w, canvas_rect.max.y - mm_h);
             egui::Area::new(egui::Id::new("minimap_overlay"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(mm_pos)
@@ -766,6 +772,5 @@ impl eframe::App for VoidApp {
                     }
                 });
         }
-
     }
 }

@@ -25,19 +25,21 @@ pub fn process_input(
 
     ctx.input(|input| {
         // Check if a paste event exists (to avoid double-processing with Ctrl+V raw byte)
-        let has_paste_event = input
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::Paste(_)));
+        let has_paste_event = input.events.iter().any(|e| matches!(e, Event::Paste(_)));
 
         // Check if any Ctrl/Alt key event exists this frame — if so, skip Text events
         // to avoid sending raw characters alongside control sequences (e.g., Ctrl+W
         // sending both 'w' text and \x17 key).
-        let has_ctrl_key = input.events.iter().any(|e| matches!(e, Event::Key {
-            pressed: true,
-            modifiers: Modifiers { ctrl: true, .. } | Modifiers { alt: true, .. },
-            ..
-        }));
+        let has_ctrl_key = input.events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Key {
+                    pressed: true,
+                    modifiers: Modifiers { ctrl: true, .. } | Modifiers { alt: true, .. },
+                    ..
+                }
+            )
+        });
 
         for event in &input.events {
             match event {
@@ -281,12 +283,7 @@ fn tilde_key_with_mods(num: &[u8], modifiers: &Modifiers) -> Vec<u8> {
 /// Generate F-key sequence with optional modifier encoding.
 /// F1-F4 use SS3 format (\x1bOP) without modifiers, CSI format (\x1b[1;modP) with modifiers.
 /// F5+ use CSI tilde format (\x1b[15~) without modifiers, (\x1b[15;mod~) with modifiers.
-fn fkey_sequence(
-    suffix: &[u8],
-    csi_num: &[u8],
-    modifiers: &Modifiers,
-    is_ss3: bool,
-) -> Vec<u8> {
+fn fkey_sequence(suffix: &[u8], csi_num: &[u8], modifiers: &Modifiers, is_ss3: bool) -> Vec<u8> {
     let m = modifier_param(modifiers);
     if m == 1 {
         // No modifiers

@@ -143,7 +143,11 @@ pub fn draw_minimap(
     let vp_min = canvas_to_minimap(visible.min);
     let vp_max = canvas_to_minimap(visible.max);
     let vp_rect = Rect::from_min_max(vp_min, vp_max);
-    painter.rect_stroke(vp_rect, 1.0, egui::Stroke::new(1.5, MINIMAP_VIEWPORT_BORDER));
+    painter.rect_stroke(
+        vp_rect,
+        1.0,
+        egui::Stroke::new(1.5, MINIMAP_VIEWPORT_BORDER),
+    );
 
     // Zoom label
     let zoom_text = format!("{:.0}%", viewport.zoom * 100.0);

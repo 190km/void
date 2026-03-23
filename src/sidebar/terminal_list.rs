@@ -102,7 +102,9 @@ pub fn draw_terminal_list(ui: &mut egui::Ui, panels: &[CanvasPanel]) -> Vec<Side
 
         // Click → focus panel
         if resp.clicked() {
-            responses.push(SidebarResponse::FocusPanel { panel_id: panel.id() });
+            responses.push(SidebarResponse::FocusPanel {
+                panel_id: panel.id(),
+            });
         }
 
         // Context menu

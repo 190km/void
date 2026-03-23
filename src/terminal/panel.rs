@@ -1003,8 +1003,10 @@ impl TerminalPanel {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
         } else if blr_resp.hovered() || blr_resp.dragged_by(egui::PointerButton::Primary) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNeSw);
-        } else if rr_resp.hovered() || rr_resp.dragged_by(egui::PointerButton::Primary)
-            || rl_resp.hovered() || rl_resp.dragged_by(egui::PointerButton::Primary)
+        } else if rr_resp.hovered()
+            || rr_resp.dragged_by(egui::PointerButton::Primary)
+            || rl_resp.hovered()
+            || rl_resp.dragged_by(egui::PointerButton::Primary)
         {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         } else if rb_resp.hovered() || rb_resp.dragged_by(egui::PointerButton::Primary) {
@@ -1016,10 +1018,7 @@ impl TerminalPanel {
         // Context menu with Copy / Paste / Select All
         body_resp.context_menu(|ui| {
             let has_sel = self.selection.is_some();
-            if ui
-                .add_enabled(has_sel, egui::Button::new("Copy"))
-                .clicked()
-            {
+            if ui.add_enabled(has_sel, egui::Button::new("Copy")).clicked() {
                 if let Some(text) = self.selected_text() {
                     ui.ctx().copy_text(text);
                 }

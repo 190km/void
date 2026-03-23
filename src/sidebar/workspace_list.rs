@@ -180,7 +180,9 @@ pub fn draw_workspace_tree(
 
                 // Click → focus panel
                 if resp.clicked() {
-                    responses.push(SidebarResponse::FocusPanel { panel_id: panel.id() });
+                    responses.push(SidebarResponse::FocusPanel {
+                        panel_id: panel.id(),
+                    });
                 }
 
                 // Context menu

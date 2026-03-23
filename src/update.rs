@@ -220,9 +220,7 @@ rm -f "$0"
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
         }
-        let _ = std::process::Command::new("bash")
-            .arg(&script_path)
-            .spawn();
+        let _ = std::process::Command::new("bash").arg(&script_path).spawn();
         std::process::exit(0);
     }
 }
@@ -230,7 +228,9 @@ rm -f "$0"
 #[cfg(target_os = "linux")]
 fn install_linux(pid: u32, archive_path: &str, exe: &std::path::Path) {
     // Install to the same directory as the current binary
-    let install_dir = exe.parent().unwrap_or(std::path::Path::new("/usr/local/bin"));
+    let install_dir = exe
+        .parent()
+        .unwrap_or(std::path::Path::new("/usr/local/bin"));
     let exe_name = exe
         .file_name()
         .unwrap_or(std::ffi::OsStr::new("void"))
@@ -277,9 +277,7 @@ rm -f "$0"
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
         }
-        let _ = std::process::Command::new("bash")
-            .arg(&script_path)
-            .spawn();
+        let _ = std::process::Command::new("bash").arg(&script_path).spawn();
         std::process::exit(0);
     }
 }
@@ -364,9 +362,7 @@ fn find_platform_asset(json: &serde_json::Value) -> Option<String> {
 
         #[cfg(target_os = "linux")]
         {
-            if name.contains("linux")
-                && (name.ends_with(".tar.gz") || name.ends_with(".deb"))
-            {
+            if name.contains("linux") && (name.ends_with(".tar.gz") || name.ends_with(".deb")) {
                 // Prefer .tar.gz over .deb for auto-update
                 if name.ends_with(".tar.gz") {
                     return url;
@@ -400,8 +396,7 @@ fn download_asset(url: &str) -> Result<String, String> {
 
 /// Returns true if `latest` is strictly newer than `current`.
 fn version_newer(latest: &str, current: &str) -> bool {
-    let parse =
-        |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
+    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
     let l = parse(latest);
     let c = parse(current);
     l > c

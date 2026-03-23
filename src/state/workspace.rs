@@ -101,13 +101,8 @@ impl Workspace {
             p.set_focused(false);
         }
 
-        let mut panel = TerminalPanel::new_with_terminal(
-            ctx,
-            position,
-            new_size,
-            color,
-            self.cwd.as_deref(),
-        );
+        let mut panel =
+            TerminalPanel::new_with_terminal(ctx, position, new_size, color, self.cwd.as_deref());
         panel.z_index = self.next_z;
         panel.focused = true;
         self.next_z += 1;
