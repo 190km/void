@@ -1,11 +1,11 @@
 [package]
 name = "void-terminal"
-version = "0.0.1"
+version = "1.1.0"
 edition = "2021"
 description = "Infinite canvas terminal emulator — GPU-accelerated, cross-platform"
 license = "MIT"
 repository = "https://github.com/190km/void"
-homepage = "https://void.sh"
+homepage = "https://github.com/190km/void"
 authors = ["190km"]
 readme = "README.md"
 keywords = ["terminal", "gpu", "canvas", "egui", "wgpu"]
