@@ -68,11 +68,15 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
       - name: Build NSIS installer
         shell: pwsh
         run: |
           Copy-Item "target\x86_64-pc-windows-msvc\release\void.exe" "installer\void.exe"
-          makensis /DVERSION=$env:VERSION installer\void.nsi
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /DVERSION=$env:VERSION installer\void.nsi
           Write-Host "Installer created:"
           Get-Item "installer\void-$env:VERSION-x86_64-setup.exe" | Select-Object Name, Length
 
