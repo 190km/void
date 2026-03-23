@@ -203,13 +203,35 @@ pub fn render_terminal(
             fg = brighten(fg);
         }
 
+        // Italic: faux-italic via slight x-offset on top (skew effect)
+        let is_italic = fl.contains(Flags::ITALIC);
+        let text_x = if is_italic { x + 1.5 } else { x };
+
         clipped.text(
-            Pos2::new(x, y),
+            Pos2::new(text_x, y),
             egui::Align2::LEFT_TOP,
             c.to_string(),
             font.clone(),
             fg,
         );
+
+        // Underline decoration
+        if fl.contains(Flags::UNDERLINE) {
+            let underline_y = y + ch - 1.0;
+            clipped.line_segment(
+                [Pos2::new(x, underline_y), Pos2::new(x + cw, underline_y)],
+                egui::Stroke::new(1.0, fg),
+            );
+        }
+
+        // Strikethrough decoration
+        if fl.contains(Flags::STRIKEOUT) {
+            let strike_y = y + ch * 0.5;
+            clipped.line_segment(
+                [Pos2::new(x, strike_y), Pos2::new(x + cw, strike_y)],
+                egui::Stroke::new(1.0, fg),
+            );
+        }
     }
 
     // --- Cursor ---
