@@ -49,6 +49,7 @@ pub struct PtyHandle {
     pub term: Arc<Mutex<Term<EventProxy>>>,
     pub title: Arc<Mutex<String>>,
     pub alive: Arc<AtomicBool>,
+    pub bell_fired: Arc<AtomicBool>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     last_input_at: Arc<Mutex<Instant>>,
     last_output_at: Arc<Mutex<Instant>>,
@@ -104,6 +105,7 @@ impl PtyHandle {
         let term = Arc::new(Mutex::new(Term::new(config, &dims, event_proxy)));
         let title = Arc::new(Mutex::new(title.to_string()));
         let alive = Arc::new(AtomicBool::new(true));
+        let bell_fired = Arc::new(AtomicBool::new(false));
         let now = Instant::now();
         let last_input_at = Arc::new(Mutex::new(now));
         let last_output_at = Arc::new(Mutex::new(now));
@@ -122,6 +124,7 @@ impl PtyHandle {
         let alive_clone_events = alive.clone();
         let ctx_clone_events = ctx.clone();
         let last_output_clone = last_output_at.clone();
+        let bell_clone = bell_fired.clone();
         let alive_clone_wait = alive.clone();
         let ctx_clone_wait = ctx.clone();
 
@@ -147,11 +150,18 @@ impl PtyHandle {
                     Event::ChildExit(_) | Event::Exit => {
                         alive_clone_events.store(false, Ordering::Relaxed);
                     }
+                    Event::Bell => {
+                        bell_clone.store(true, Ordering::Relaxed);
+                    }
+                    Event::ClipboardStore(_, data) => {
+                        // OSC 52: program (vim, etc.) wants to set clipboard
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(data);
+                        }
+                    }
                     Event::Wakeup
-                    | Event::Bell
                     | Event::MouseCursorDirty
                     | Event::CursorBlinkingChange
-                    | Event::ClipboardStore(_, _)
                     | Event::ClipboardLoad(_, _)
                     | Event::ColorRequest(_, _)
                     | Event::TextAreaSizeRequest(_) => {}
@@ -206,6 +216,7 @@ impl PtyHandle {
             term,
             title,
             alive,
+            bell_fired,
             writer,
             last_input_at,
             last_output_at,
