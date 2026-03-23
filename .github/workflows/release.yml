@@ -47,7 +47,7 @@ jobs:
             return data.id
 
   # ── Windows x64 (NSIS installer) ─────────────────────────────────
-  build-windows-x64:
+  build-windows:
     name: Windows x64
     needs: create-release
     runs-on: windows-latest
@@ -79,42 +79,11 @@ jobs:
 
       - name: Upload
         shell: bash
-        run: gh release upload "v${VERSION}" "installer/void-${VERSION}-windows-x64.exe" --clobber
-
-  # ── Windows ARM64 (exe only) ─────────────────────────────────────
-  build-windows-arm64:
-    name: Windows ARM64
-    needs: create-release
-    runs-on: windows-latest
-    timeout-minutes: 30
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ needs.create-release.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: windows-arm64-release
-
-      - name: Build
-        run: cargo build --release --locked --target aarch64-pc-windows-msvc
-
-      - name: Package
-        shell: bash
-        run: |
-          mkdir -p staging
-          cp target/aarch64-pc-windows-msvc/release/void.exe "staging/void-${VERSION}-windows-arm64.exe"
-
-      - name: Upload
-        shell: bash
-        run: gh release upload "v${VERSION}" "staging/void-${VERSION}-windows-arm64.exe" --clobber
+        run: gh release upload "v${VERSION}" "installer/void-${VERSION}-x86_64-setup.exe" --clobber
 
   # ── macOS ARM64 (Apple Silicon) ──────────────────────────────────
   build-macos-arm64:
-    name: macOS ARM64
+    name: macOS Apple Silicon
     needs: create-release
     runs-on: macos-latest
     timeout-minutes: 30
@@ -159,14 +128,14 @@ jobs:
           cp -r "$APP" dmg-stage/
           ln -s /Applications dmg-stage/Applications
           hdiutil create -volname "Void" -srcfolder dmg-stage -ov -format UDZO \
-            "void-${VERSION}-macos-arm64.dmg"
+            "void-${VERSION}-aarch64-apple-darwin-setup.dmg"
 
       - name: Upload
-        run: gh release upload "v${VERSION}" "void-${VERSION}-macos-arm64.dmg" --clobber
+        run: gh release upload "v${VERSION}" "void-${VERSION}-aarch64-apple-darwin-setup.dmg" --clobber
 
   # ── macOS x64 (Intel) ────────────────────────────────────────────
   build-macos-x64:
-    name: macOS x64
+    name: macOS Intel
     needs: create-release
     runs-on: macos-latest
     timeout-minutes: 30
@@ -211,13 +180,13 @@ jobs:
           cp -r "$APP" dmg-stage/
           ln -s /Applications dmg-stage/Applications
           hdiutil create -volname "Void" -srcfolder dmg-stage -ov -format UDZO \
-            "void-${VERSION}-macos-x64.dmg"
+            "void-${VERSION}-x86_64-apple-darwin-setup.dmg"
 
       - name: Upload
-        run: gh release upload "v${VERSION}" "void-${VERSION}-macos-x64.dmg" --clobber
+        run: gh release upload "v${VERSION}" "void-${VERSION}-x86_64-apple-darwin-setup.dmg" --clobber
 
   # ── Linux x64 (.deb + tar.gz) ────────────────────────────────────
-  build-linux-x64:
+  build-linux:
     name: Linux x64
     needs: create-release
     runs-on: ubuntu-22.04
@@ -245,9 +214,9 @@ jobs:
 
       - name: Package tar.gz
         run: |
-          mkdir -p "void-${VERSION}-linux-x64"
-          cp target/release/void "void-${VERSION}-linux-x64/"
-          tar czf "void-${VERSION}-linux-x64.tar.gz" "void-${VERSION}-linux-x64"
+          mkdir -p "void-${VERSION}-x86_64-linux-setup"
+          cp target/release/void "void-${VERSION}-x86_64-linux-setup/"
+          tar czf "void-${VERSION}-x86_64-linux-setup.tar.gz" "void-${VERSION}-x86_64-linux-setup"
 
       - name: Package .deb
         run: |
@@ -282,70 +251,29 @@ jobs:
           EOF
 
           dpkg-deb --build --root-owner-group "$PKG"
-          mv "${PKG}.deb" "void-${VERSION}-linux-x64.deb"
+          mv "${PKG}.deb" "void-${VERSION}-x86_64-linux-setup.deb"
 
       - name: Upload
         run: |
           gh release upload "v${VERSION}" \
-            "void-${VERSION}-linux-x64.tar.gz" \
-            "void-${VERSION}-linux-x64.deb" \
+            "void-${VERSION}-x86_64-linux-setup.tar.gz" \
+            "void-${VERSION}-x86_64-linux-setup.deb" \
             --clobber
-
-  # ── Linux ARM64 (tar.gz) ─────────────────────────────────────────
-  build-linux-arm64:
-    name: Linux ARM64
-    needs: create-release
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ needs.create-release.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: linux-arm64-release
-
-      - name: Install cross-compiler
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            libasound2-dev:arm64 libx11-dev:arm64 libxcursor-dev:arm64 \
-            libxi-dev:arm64 libxrandr-dev:arm64 libxkbcommon-dev:arm64 \
-            libwayland-dev:arm64 pkg-config || true
-          # Fallback: use cross if native cross-compile deps fail
-          cargo install cross --git https://github.com/cross-rs/cross || true
-
-      - name: Build
-        run: |
-          export PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu
-          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-          cargo build --release --locked --target aarch64-unknown-linux-gnu || \
-            cross build --release --locked --target aarch64-unknown-linux-gnu
-
-      - name: Package
-        run: |
-          mkdir -p "void-${VERSION}-linux-arm64"
-          cp target/aarch64-unknown-linux-gnu/release/void "void-${VERSION}-linux-arm64/"
-          tar czf "void-${VERSION}-linux-arm64.tar.gz" "void-${VERSION}-linux-arm64"
-
-      - name: Upload
-        run: gh release upload "v${VERSION}" "void-${VERSION}-linux-arm64.tar.gz" --clobber
 
   # ── Publish release ──────────────────────────────────────────────
   publish-release:
     needs:
       - create-release
-      - build-windows-x64
-      - build-windows-arm64
+      - build-windows
       - build-macos-arm64
       - build-macos-x64
-      - build-linux-x64
-      - build-linux-arm64
-    if: always() && needs.create-release.result == 'success' && needs.build-windows-x64.result == 'success'
+      - build-linux
+    if: >-
+      always() &&
+      needs.create-release.result == 'success' &&
+      (needs.build-windows.result == 'success' ||
+       needs.build-macos-arm64.result == 'success' ||
+       needs.build-linux.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - name: Publish release
