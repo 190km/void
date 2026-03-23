@@ -73,7 +73,7 @@ impl VoidApp {
             rename_buf: String::new(),
             brand_texture,
             sidebar: Sidebar::default(),
-            update_checker: UpdateChecker::new(),
+            update_checker: UpdateChecker::new(cc.egui_ctx.clone()),
         }
     }
 
@@ -339,6 +339,7 @@ impl eframe::App for VoidApp {
                         self.active_ws,
                         &self.brand_texture,
                         &update_state,
+                        &self.update_checker,
                     );
                     for resp in responses {
                         match resp {

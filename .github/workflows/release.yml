@@ -13,7 +13,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Exactement comme Handy: créer une draft release via l'API GitHub ──
+  # ── Create draft release ──────────────────────────────────────────
   create-release:
     runs-on: ubuntu-latest
     outputs:
@@ -46,8 +46,9 @@ jobs:
             })
             return data.id
 
-  # ── Build Windows + NSIS installer ────────────────────────────────
-  build-windows:
+  # ── Windows x64 (NSIS installer) ─────────────────────────────────
+  build-windows-x64:
+    name: Windows x64
     needs: create-release
     runs-on: windows-latest
     timeout-minutes: 30
@@ -56,14 +57,12 @@ jobs:
       VERSION: ${{ needs.create-release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-
       - uses: Swatinem/rust-cache@v2
         with:
-          key: windows-release
+          key: windows-x64-release
 
       - name: Build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
@@ -77,19 +76,276 @@ jobs:
         run: |
           Copy-Item "target\x86_64-pc-windows-msvc\release\void.exe" "installer\void.exe"
           & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /DVERSION=$env:VERSION installer\void.nsi
-          Write-Host "Installer created:"
-          Get-Item "installer\void-$env:VERSION-windows-x64.exe" | Select-Object Name, Length
 
-      - name: Upload installer to release
+      - name: Upload
+        shell: bash
+        run: gh release upload "v${VERSION}" "installer/void-${VERSION}-windows-x64.exe" --clobber
+
+  # ── Windows ARM64 (exe only) ─────────────────────────────────────
+  build-windows-arm64:
+    name: Windows ARM64
+    needs: create-release
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.create-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-arm64-release
+
+      - name: Build
+        run: cargo build --release --locked --target aarch64-pc-windows-msvc
+
+      - name: Package
         shell: bash
         run: |
-          gh release upload "v${VERSION}" "installer/void-${VERSION}-windows-x64.exe" --clobber
+          mkdir -p staging
+          cp target/aarch64-pc-windows-msvc/release/void.exe "staging/void-${VERSION}-windows-arm64.exe"
 
-  # ── Publish: draft → public (comme Handy après que tous les builds passent) ──
+      - name: Upload
+        shell: bash
+        run: gh release upload "v${VERSION}" "staging/void-${VERSION}-windows-arm64.exe" --clobber
+
+  # ── macOS ARM64 (Apple Silicon) ──────────────────────────────────
+  build-macos-arm64:
+    name: macOS ARM64
+    needs: create-release
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.create-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-arm64-release
+
+      - name: Build
+        run: cargo build --release --locked --target aarch64-apple-darwin
+
+      - name: Package .dmg
+        run: |
+          APP="Void.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/aarch64-apple-darwin/release/void "$APP/Contents/MacOS/void"
+          chmod +x "$APP/Contents/MacOS/void"
+          cp assets/icon.png "$APP/Contents/Resources/icon.png"
+          cat > "$APP/Contents/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>Void</string>
+            <key>CFBundleIdentifier</key><string>sh.void.terminal</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleExecutable</key><string>void</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleIconFile</key><string>icon</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+          </dict></plist>
+          PLIST
+          mkdir -p dmg-stage
+          cp -r "$APP" dmg-stage/
+          ln -s /Applications dmg-stage/Applications
+          hdiutil create -volname "Void" -srcfolder dmg-stage -ov -format UDZO \
+            "void-${VERSION}-macos-arm64.dmg"
+
+      - name: Upload
+        run: gh release upload "v${VERSION}" "void-${VERSION}-macos-arm64.dmg" --clobber
+
+  # ── macOS x64 (Intel) ────────────────────────────────────────────
+  build-macos-x64:
+    name: macOS x64
+    needs: create-release
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.create-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-x64-release
+
+      - name: Build
+        run: cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Package .dmg
+        run: |
+          APP="Void.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/x86_64-apple-darwin/release/void "$APP/Contents/MacOS/void"
+          chmod +x "$APP/Contents/MacOS/void"
+          cp assets/icon.png "$APP/Contents/Resources/icon.png"
+          cat > "$APP/Contents/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>Void</string>
+            <key>CFBundleIdentifier</key><string>sh.void.terminal</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleExecutable</key><string>void</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleIconFile</key><string>icon</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+          </dict></plist>
+          PLIST
+          mkdir -p dmg-stage
+          cp -r "$APP" dmg-stage/
+          ln -s /Applications dmg-stage/Applications
+          hdiutil create -volname "Void" -srcfolder dmg-stage -ov -format UDZO \
+            "void-${VERSION}-macos-x64.dmg"
+
+      - name: Upload
+        run: gh release upload "v${VERSION}" "void-${VERSION}-macos-x64.dmg" --clobber
+
+  # ── Linux x64 (.deb + tar.gz) ────────────────────────────────────
+  build-linux-x64:
+    name: Linux x64
+    needs: create-release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.create-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-x64-release
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libudev-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev \
+            libxkbcommon-dev libxrandr-dev pkg-config
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package tar.gz
+        run: |
+          mkdir -p "void-${VERSION}-linux-x64"
+          cp target/release/void "void-${VERSION}-linux-x64/"
+          tar czf "void-${VERSION}-linux-x64.tar.gz" "void-${VERSION}-linux-x64"
+
+      - name: Package .deb
+        run: |
+          PKG="void-terminal_${VERSION}_amd64"
+          mkdir -p "$PKG/DEBIAN" "$PKG/usr/bin" "$PKG/usr/share/applications" "$PKG/usr/share/icons/hicolor/256x256/apps"
+          cp target/release/void "$PKG/usr/bin/void"
+          chmod 755 "$PKG/usr/bin/void"
+          cp assets/icon.png "$PKG/usr/share/icons/hicolor/256x256/apps/void-terminal.png"
+
+          cat > "$PKG/usr/share/applications/void-terminal.desktop" << 'EOF'
+          [Desktop Entry]
+          Name=Void Terminal
+          Comment=Infinite Canvas Terminal
+          Exec=void
+          Icon=void-terminal
+          Terminal=false
+          Type=Application
+          Categories=System;TerminalEmulator;
+          EOF
+
+          cat > "$PKG/DEBIAN/control" << EOF
+          Package: void-terminal
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Depends: libasound2, libx11-6, libxcursor1, libxi6, libxrandr2, libxkbcommon0, libwayland-client0
+          Maintainer: 190km <190km@void.sh>
+          Description: Infinite Canvas Terminal
+           GPU-accelerated terminal emulator with an infinite 2D canvas.
+          Homepage: https://void.sh
+          EOF
+
+          dpkg-deb --build --root-owner-group "$PKG"
+          mv "${PKG}.deb" "void-${VERSION}-linux-x64.deb"
+
+      - name: Upload
+        run: |
+          gh release upload "v${VERSION}" \
+            "void-${VERSION}-linux-x64.tar.gz" \
+            "void-${VERSION}-linux-x64.deb" \
+            --clobber
+
+  # ── Linux ARM64 (tar.gz) ─────────────────────────────────────────
+  build-linux-arm64:
+    name: Linux ARM64
+    needs: create-release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.create-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-arm64-release
+
+      - name: Install cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            libasound2-dev:arm64 libx11-dev:arm64 libxcursor-dev:arm64 \
+            libxi-dev:arm64 libxrandr-dev:arm64 libxkbcommon-dev:arm64 \
+            libwayland-dev:arm64 pkg-config || true
+          # Fallback: use cross if native cross-compile deps fail
+          cargo install cross --git https://github.com/cross-rs/cross || true
+
+      - name: Build
+        run: |
+          export PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          cargo build --release --locked --target aarch64-unknown-linux-gnu || \
+            cross build --release --locked --target aarch64-unknown-linux-gnu
+
+      - name: Package
+        run: |
+          mkdir -p "void-${VERSION}-linux-arm64"
+          cp target/aarch64-unknown-linux-gnu/release/void "void-${VERSION}-linux-arm64/"
+          tar czf "void-${VERSION}-linux-arm64.tar.gz" "void-${VERSION}-linux-arm64"
+
+      - name: Upload
+        run: gh release upload "v${VERSION}" "void-${VERSION}-linux-arm64.tar.gz" --clobber
+
+  # ── Publish release ──────────────────────────────────────────────
   publish-release:
     needs:
       - create-release
-      - build-windows
+      - build-windows-x64
+      - build-windows-arm64
+      - build-macos-arm64
+      - build-macos-x64
+      - build-linux-x64
+      - build-linux-arm64
+    if: always() && needs.create-release.result == 'success' && needs.build-windows-x64.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Publish release

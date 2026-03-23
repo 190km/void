@@ -42,7 +42,7 @@ directories = "5"
 notify = "7"
 arboard = "3"
 rfd = "0.15"
-ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
+minreq = { version = "2", features = ["https-native"] }
 
 [profile.release]
 opt-level = 3

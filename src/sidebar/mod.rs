@@ -7,7 +7,7 @@ use egui::{Color32, Pos2, Rect, Vec2};
 use uuid::Uuid;
 
 use crate::state::workspace::Workspace;
-use crate::update::UpdateState;
+use crate::update::{UpdateChecker, UpdateState, UpdateStatus};
 
 // ── Color palette (Tailwind neutral/zinc) ──────────────────────────────────
 
@@ -73,6 +73,7 @@ impl Sidebar {
         active_ws: usize,
         brand_texture: &egui::TextureHandle,
         update_state: &UpdateState,
+        update_checker: &UpdateChecker,
     ) -> Vec<SidebarResponse> {
         let mut responses = Vec::new();
 
@@ -93,36 +94,67 @@ impl Sidebar {
             );
             logo_resp.context_menu(|_ui| {});
 
-            // Update button on the right
-            if update_state.update_available {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label =
-                        format!("v{}", update_state.latest_version.as_deref().unwrap_or("?"));
-                    let btn = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new(label)
+            // Update indicator on the right
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                match &update_state.status {
+                    UpdateStatus::Available => {
+                        let label = format!(
+                            "\u{2913} v{}",
+                            update_state.latest_version.as_deref().unwrap_or("?")
+                        );
+                        let btn = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(label)
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(130, 200, 130)),
+                            )
+                            .fill(Color32::from_rgb(30, 45, 30))
+                            .stroke(egui::Stroke::new(0.5, Color32::from_rgb(60, 100, 60)))
+                            .rounding(4.0),
+                        );
+                        if btn.clicked() {
+                            update_checker.download();
+                        }
+                        btn.on_hover_text("Click to download and install update");
+                    }
+                    UpdateStatus::Downloading => {
+                        ui.label(
+                            egui::RichText::new("Downloading...")
                                 .size(10.0)
-                                .color(Color32::from_rgb(130, 200, 130)),
-                        )
-                        .fill(Color32::from_rgb(30, 45, 30))
-                        .stroke(egui::Stroke::new(0.5, Color32::from_rgb(60, 100, 60)))
-                        .rounding(4.0),
-                    );
-                    if btn.clicked() {
-                        if let Some(url) = &update_state.release_url {
-                            #[cfg(target_os = "windows")]
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "start", "", url])
-                                .spawn();
-                            #[cfg(target_os = "macos")]
-                            let _ = std::process::Command::new("open").arg(url).spawn();
-                            #[cfg(target_os = "linux")]
-                            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                                .color(Color32::from_rgb(200, 200, 100)),
+                        );
+                    }
+                    UpdateStatus::Ready => {
+                        let btn = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("Install & restart")
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(130, 200, 130)),
+                            )
+                            .fill(Color32::from_rgb(30, 45, 30))
+                            .stroke(egui::Stroke::new(0.5, Color32::from_rgb(60, 100, 60)))
+                            .rounding(4.0),
+                        );
+                        if btn.clicked() {
+                            update_checker.install_and_exit();
                         }
                     }
-                    btn.on_hover_text("New version available — click to download");
-                });
-            }
+                    UpdateStatus::UpToDate | UpdateStatus::Checking => {
+                        ui.label(
+                            egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                .size(10.0)
+                                .color(TEXT_MUTED),
+                        );
+                    }
+                    UpdateStatus::Error(_) => {
+                        ui.label(
+                            egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                .size(10.0)
+                                .color(TEXT_MUTED),
+                        );
+                    }
+                }
+            });
         });
         ui.add_space(14.0);
 
