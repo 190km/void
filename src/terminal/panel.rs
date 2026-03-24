@@ -182,7 +182,9 @@ impl TerminalPanel {
         size: Vec2,
         color: Color32,
         cwd: Option<&std::path::Path>,
+        bus: Option<std::sync::Arc<std::sync::Mutex<crate::bus::TerminalBus>>>,
     ) -> Self {
+        let id = Uuid::new_v4();
         let content_size = Self::terminal_content_size(size);
         let (cols, rows) =
             crate::terminal::renderer::compute_grid_size(content_size.x, content_size.y);
@@ -190,17 +192,18 @@ impl TerminalPanel {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(default_shell_title);
-        let (pty, spawn_error) = match PtyHandle::spawn(ctx, rows, cols, &title, cwd) {
-            Ok(pty) => (Some(pty), None),
-            Err(err) => {
-                let message = err.to_string();
-                log::error!("Failed to spawn terminal: {message}");
-                title = format!("spawn failed: {title}");
-                (None, Some(message))
-            }
-        };
+        let (pty, spawn_error) =
+            match PtyHandle::spawn(ctx, rows, cols, &title, cwd, id, bus.clone()) {
+                Ok(pty) => (Some(pty), None),
+                Err(err) => {
+                    let message = err.to_string();
+                    log::error!("Failed to spawn terminal: {message}");
+                    title = format!("spawn failed: {title}");
+                    (None, Some(message))
+                }
+            };
         Self {
-            id: Uuid::new_v4(),
+            id,
             title,
             position,
             size,
@@ -258,12 +261,13 @@ impl TerminalPanel {
         ctx: &egui::Context,
         state: &crate::state::persistence::PanelState,
         cwd: Option<&std::path::Path>,
+        bus: Option<std::sync::Arc<std::sync::Mutex<crate::bus::TerminalBus>>>,
     ) -> Self {
         let position = Pos2::new(state.position[0], state.position[1]);
         let size = Vec2::new(state.size[0], state.size[1]);
         let color = Color32::from_rgb(state.color[0], state.color[1], state.color[2]);
 
-        let mut panel = Self::new_with_terminal(ctx, position, size, color, cwd);
+        let mut panel = Self::new_with_terminal(ctx, position, size, color, cwd, bus);
         panel.z_index = state.z_index;
         panel.focused = state.focused;
         panel
@@ -286,6 +290,11 @@ impl TerminalPanel {
     }
     pub fn is_alive(&self) -> bool {
         self.pty.as_ref().is_some_and(|p| p.is_alive())
+    }
+
+    /// Get a reference to the PTY handle, if one exists.
+    pub fn pty_handle(&self) -> Option<&PtyHandle> {
+        self.pty.as_ref()
     }
 
     fn terminal_body_rect(panel_rect: Rect) -> Rect {

@@ -1,6 +1,9 @@
+use std::sync::{Arc, Mutex};
+
 use eframe::egui;
 use egui::{Color32, Pos2, Vec2};
 
+use crate::bus::TerminalBus;
 use crate::canvas::viewport::Viewport;
 use crate::command_palette::commands::Command;
 use crate::command_palette::CommandPalette;
@@ -35,6 +38,7 @@ pub struct VoidApp {
     brand_texture: egui::TextureHandle,
     sidebar: Sidebar,
     update_checker: UpdateChecker,
+    bus: Arc<Mutex<TerminalBus>>,
 }
 
 impl VoidApp {
@@ -55,13 +59,17 @@ impl VoidApp {
             )
         };
 
+        let bus = Arc::new(Mutex::new(TerminalBus::new()));
+
         // Try to restore saved layout, otherwise create a default workspace
         let (workspaces, active_ws, sidebar_visible, show_grid, show_minimap, viewport) =
             if let Some(saved) = crate::state::persistence::load_state() {
                 let wss: Vec<Workspace> = saved
                     .workspaces
                     .iter()
-                    .map(|ws_state| Workspace::from_saved(&ctx, ws_state, PANEL_COLORS))
+                    .map(|ws_state| {
+                        Workspace::from_saved(&ctx, ws_state, PANEL_COLORS, Some(bus.clone()))
+                    })
                     .collect();
                 let active = saved.active_ws.min(wss.len().saturating_sub(1));
                 let vp = Viewport {
@@ -78,7 +86,7 @@ impl VoidApp {
                 )
             } else {
                 let mut ws = Workspace::new("Default", None);
-                ws.spawn_terminal(&ctx, PANEL_COLORS);
+                ws.spawn_terminal(&ctx, PANEL_COLORS, Some(bus.clone()));
                 (
                     vec![ws],
                     0,
@@ -106,6 +114,7 @@ impl VoidApp {
             brand_texture,
             sidebar: Sidebar::default(),
             update_checker: UpdateChecker::new(cc.egui_ctx.clone()),
+            bus,
         }
     }
 
@@ -190,7 +199,7 @@ impl VoidApp {
 
             let mut ws = Workspace::new(name, Some(path));
             if let Some(ctx) = &self.ctx {
-                ws.spawn_terminal(ctx, PANEL_COLORS);
+                ws.spawn_terminal(ctx, PANEL_COLORS, Some(self.bus.clone()));
             }
 
             self.workspaces.push(ws);
@@ -201,14 +210,18 @@ impl VoidApp {
 
     fn spawn_terminal(&mut self) {
         if let Some(ctx) = self.ctx.clone() {
-            self.ws_mut().spawn_terminal(&ctx, PANEL_COLORS);
+            let bus = self.bus.clone();
+            self.ws_mut().spawn_terminal(&ctx, PANEL_COLORS, Some(bus));
         }
     }
 
     fn execute_command(&mut self, cmd: Command, ctx: &egui::Context, screen_rect: egui::Rect) {
         match cmd {
             Command::NewTerminal => self.spawn_terminal(),
-            Command::CloseTerminal => self.ws_mut().close_focused(),
+            Command::CloseTerminal => {
+                let bus = self.bus.clone();
+                self.ws_mut().close_focused_with_bus(Some(&bus));
+            }
             Command::RenameTerminal => {
                 let found = self
                     .ws()
@@ -459,6 +472,17 @@ impl eframe::App for VoidApp {
                             }
                             SidebarResponse::DeleteWorkspace(idx) => {
                                 if self.workspaces.len() > 1 {
+                                    // Deregister all terminals in the workspace from the bus
+                                    let panel_ids: Vec<uuid::Uuid> = self.workspaces[idx]
+                                        .panels
+                                        .iter()
+                                        .map(|p| p.id())
+                                        .collect();
+                                    if let Ok(mut b) = self.bus.lock() {
+                                        for id in panel_ids {
+                                            b.deregister(id);
+                                        }
+                                    }
                                     self.workspaces.remove(idx);
                                     if self.active_ws >= self.workspaces.len() {
                                         self.active_ws = self.workspaces.len() - 1;
@@ -503,7 +527,8 @@ impl eframe::App for VoidApp {
                                 }
                             }
                             SidebarResponse::ClosePanel(idx) => {
-                                self.ws_mut().close_panel(idx);
+                                let bus = self.bus.clone();
+                                self.ws_mut().close_panel_with_bus(idx, Some(&bus));
                             }
                         }
                     }
@@ -753,8 +778,9 @@ impl eframe::App for VoidApp {
                 }
 
                 to_close.sort_unstable();
+                let bus = self.bus.clone();
                 for idx in to_close.into_iter().rev() {
-                    self.ws_mut().close_panel(idx);
+                    self.ws_mut().close_panel_with_bus(idx, Some(&bus));
                 }
 
                 // Unfocus all panels when clicking empty canvas
