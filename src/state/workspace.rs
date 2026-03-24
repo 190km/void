@@ -40,6 +40,7 @@ impl Workspace {
         ctx: &egui::Context,
         state: &crate::state::persistence::WorkspaceState,
         colors: &[egui::Color32],
+        font_size: f32,
     ) -> Self {
         let cwd = state.cwd.clone();
         let mut ws = Self {
@@ -54,13 +55,13 @@ impl Workspace {
         };
 
         for panel_state in &state.panels {
-            let panel = TerminalPanel::from_saved(ctx, panel_state, cwd.as_deref());
+            let panel = TerminalPanel::from_saved(ctx, panel_state, cwd.as_deref(), font_size);
             ws.panels.push(CanvasPanel::Terminal(panel));
         }
 
         // If no panels were restored, spawn a default one
         if ws.panels.is_empty() {
-            ws.spawn_terminal(ctx, colors);
+            ws.spawn_terminal(ctx, colors, font_size);
         }
 
         ws
@@ -89,7 +90,12 @@ impl Workspace {
         self.next_z += 1;
     }
 
-    pub fn spawn_terminal(&mut self, ctx: &egui::Context, colors: &[egui::Color32]) {
+    pub fn spawn_terminal(
+        &mut self,
+        ctx: &egui::Context,
+        colors: &[egui::Color32],
+        font_size: f32,
+    ) {
         let color = colors[self.next_color % colors.len()];
         self.next_color += 1;
 
@@ -101,8 +107,14 @@ impl Workspace {
             p.set_focused(false);
         }
 
-        let mut panel =
-            TerminalPanel::new_with_terminal(ctx, position, new_size, color, self.cwd.as_deref());
+        let mut panel = TerminalPanel::new_with_terminal(
+            ctx,
+            position,
+            new_size,
+            color,
+            self.cwd.as_deref(),
+            font_size,
+        );
         panel.z_index = self.next_z;
         panel.focused = true;
         self.next_z += 1;

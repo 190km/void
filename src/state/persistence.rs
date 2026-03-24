@@ -11,6 +11,12 @@ pub struct AppState {
     pub sidebar_visible: bool,
     pub show_grid: bool,
     pub show_minimap: bool,
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
+}
+
+fn default_font_size() -> f32 {
+    crate::terminal::renderer::DEFAULT_FONT_SIZE
 }
 
 /// Serializable snapshot of a single workspace.

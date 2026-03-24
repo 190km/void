@@ -42,8 +42,8 @@ pub fn handle_canvas_input(
             }
         }
 
-        // --- Zoom: keyboard Ctrl+= / Ctrl+- / Ctrl+0 ---
-        if input.modifiers.ctrl {
+        // --- Zoom: keyboard Ctrl+= / Ctrl+- / Ctrl+0 (without Shift — Shift variants are font zoom) ---
+        if input.modifiers.ctrl && !input.modifiers.shift {
             if input.key_pressed(egui::Key::Equals) || input.key_pressed(egui::Key::Plus) {
                 let center = screen_rect.center();
                 viewport.zoom_around(center, screen_rect, ZOOM_KEYBOARD_FACTOR);

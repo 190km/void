@@ -28,6 +28,7 @@ pub struct VoidApp {
     sidebar_visible: bool,
     show_grid: bool,
     show_minimap: bool,
+    font_size: f32,
     ctx: Option<egui::Context>,
     command_palette: CommandPalette,
     renaming_panel: Option<uuid::Uuid>,
@@ -56,12 +57,13 @@ impl VoidApp {
         };
 
         // Try to restore saved layout, otherwise create a default workspace
-        let (workspaces, active_ws, sidebar_visible, show_grid, show_minimap, viewport) =
+        let (workspaces, active_ws, sidebar_visible, show_grid, show_minimap, viewport, font_size) =
             if let Some(saved) = crate::state::persistence::load_state() {
+                let fs = saved.font_size;
                 let wss: Vec<Workspace> = saved
                     .workspaces
                     .iter()
-                    .map(|ws_state| Workspace::from_saved(&ctx, ws_state, PANEL_COLORS))
+                    .map(|ws_state| Workspace::from_saved(&ctx, ws_state, PANEL_COLORS, fs))
                     .collect();
                 let active = saved.active_ws.min(wss.len().saturating_sub(1));
                 let vp = Viewport {
@@ -75,10 +77,12 @@ impl VoidApp {
                     saved.show_grid,
                     saved.show_minimap,
                     vp,
+                    fs,
                 )
             } else {
+                let fs = crate::terminal::renderer::DEFAULT_FONT_SIZE;
                 let mut ws = Workspace::new("Default", None);
-                ws.spawn_terminal(&ctx, PANEL_COLORS);
+                ws.spawn_terminal(&ctx, PANEL_COLORS, fs);
                 (
                     vec![ws],
                     0,
@@ -89,6 +93,7 @@ impl VoidApp {
                         pan: Vec2::new(100.0, 50.0),
                         zoom: 0.75,
                     },
+                    fs,
                 )
             };
 
@@ -99,6 +104,7 @@ impl VoidApp {
             sidebar_visible,
             show_grid,
             show_minimap,
+            font_size,
             ctx: Some(ctx),
             command_palette: CommandPalette::default(),
             renaming_panel: None,
@@ -190,7 +196,7 @@ impl VoidApp {
 
             let mut ws = Workspace::new(name, Some(path));
             if let Some(ctx) = &self.ctx {
-                ws.spawn_terminal(ctx, PANEL_COLORS);
+                ws.spawn_terminal(ctx, PANEL_COLORS, self.font_size);
             }
 
             self.workspaces.push(ws);
@@ -201,7 +207,8 @@ impl VoidApp {
 
     fn spawn_terminal(&mut self) {
         if let Some(ctx) = self.ctx.clone() {
-            self.ws_mut().spawn_terminal(&ctx, PANEL_COLORS);
+            let font_size = self.font_size;
+            self.ws_mut().spawn_terminal(&ctx, PANEL_COLORS, font_size);
         }
     }
 
@@ -231,6 +238,17 @@ impl VoidApp {
                 self.viewport.pan = Vec2::ZERO;
             }
             Command::ZoomToFit => self.zoom_to_fit(screen_rect),
+            Command::FontZoomIn => {
+                use crate::terminal::renderer::{FONT_SIZE_STEP, MAX_FONT_SIZE};
+                self.font_size = (self.font_size + FONT_SIZE_STEP).min(MAX_FONT_SIZE);
+            }
+            Command::FontZoomOut => {
+                use crate::terminal::renderer::{FONT_SIZE_STEP, MIN_FONT_SIZE};
+                self.font_size = (self.font_size - FONT_SIZE_STEP).max(MIN_FONT_SIZE);
+            }
+            Command::FontZoomReset => {
+                self.font_size = crate::terminal::renderer::DEFAULT_FONT_SIZE;
+            }
             Command::FocusNext => self.ws_mut().focus_next(),
             Command::FocusPrev => self.ws_mut().focus_prev(),
             Command::ToggleFullscreen => {
@@ -296,6 +314,13 @@ impl VoidApp {
                 cmd = Some(Command::FocusPrev);
             } else if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::Num0) {
                 cmd = Some(Command::ZoomToFit);
+            } else if i.modifiers.ctrl
+                && i.modifiers.shift
+                && (i.key_pressed(egui::Key::Equals) || i.key_pressed(egui::Key::Plus))
+            {
+                cmd = Some(Command::FontZoomIn);
+            } else if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::Minus) {
+                cmd = Some(Command::FontZoomOut);
             } else if i.key_pressed(egui::Key::F2) && !i.modifiers.ctrl {
                 cmd = Some(Command::RenameTerminal);
             }
@@ -326,6 +351,7 @@ impl VoidApp {
             sidebar_visible: self.sidebar_visible,
             show_grid: self.show_grid,
             show_minimap: self.show_minimap,
+            font_size: self.font_size,
         }
     }
 }
@@ -541,7 +567,8 @@ impl eframe::App for VoidApp {
             if let Some(idx) = hovered_terminal {
                 let scroll_y = ctx.input(|input| input.smooth_scroll_delta.y);
                 if scroll_y != 0.0 {
-                    self.ws_mut().panels[idx].handle_scroll(ctx, scroll_y);
+                    let font_size = self.font_size;
+                    self.ws_mut().panels[idx].handle_scroll(ctx, scroll_y, font_size);
                     ctx.input_mut(|input| {
                         input.smooth_scroll_delta = egui::Vec2::ZERO;
                         input.raw_scroll_delta = egui::Vec2::ZERO;
@@ -628,7 +655,8 @@ impl eframe::App for VoidApp {
                     {
                         continue;
                     }
-                    let ix = self.ws_mut().panels[idx].show(ui, transform, canvas_rect);
+                    let font_size = self.font_size;
+                    let ix = self.ws_mut().panels[idx].show(ui, transform, canvas_rect, font_size);
                     if ix.clicked || ix.dragging_title || ix.resizing || ix.action.is_some() {
                         interactions.push((idx, ix));
                     }

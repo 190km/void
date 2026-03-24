@@ -130,9 +130,10 @@ impl CanvasPanel {
         ui: &mut egui::Ui,
         transform: egui::emath::TSTransform,
         screen_clip: Rect,
+        font_size: f32,
     ) -> PanelInteraction {
         match self {
-            Self::Terminal(t) => t.show(ui, transform, screen_clip),
+            Self::Terminal(t) => t.show(ui, transform, screen_clip, font_size),
         }
     }
 
@@ -148,9 +149,9 @@ impl CanvasPanel {
         }
     }
 
-    pub fn handle_scroll(&mut self, ctx: &egui::Context, scroll_y: f32) {
+    pub fn handle_scroll(&mut self, ctx: &egui::Context, scroll_y: f32, font_size: f32) {
         match self {
-            Self::Terminal(t) => t.handle_scroll(ctx, scroll_y),
+            Self::Terminal(t) => t.handle_scroll(ctx, scroll_y, font_size),
         }
     }
 

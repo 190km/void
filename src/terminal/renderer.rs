@@ -10,20 +10,29 @@ use std::time::Duration;
 use crate::terminal::colors::{self, DEFAULT_BG};
 use crate::terminal::pty::EventProxy;
 
-pub const FONT_SIZE: f32 = 18.0;
+pub const DEFAULT_FONT_SIZE: f32 = 18.0;
+pub const MIN_FONT_SIZE: f32 = 8.0;
+pub const MAX_FONT_SIZE: f32 = 40.0;
+pub const FONT_SIZE_STEP: f32 = 2.0;
 pub const PAD_X: f32 = 10.0;
 pub const PAD_Y: f32 = 6.0;
-const CELL_WIDTH_ESTIMATE: f32 = FONT_SIZE * 0.6;
-const CELL_HEIGHT_ESTIMATE: f32 = FONT_SIZE * 1.25;
 const CURSOR_BLINK_ON_SECONDS: f64 = 0.6;
 const CURSOR_BLINK_OFF_SECONDS: f64 = 0.4;
 
-pub fn cell_size(ctx: &egui::Context) -> (f32, f32) {
-    measure_cell(ctx)
+fn cell_width_estimate(font_size: f32) -> f32 {
+    font_size * 0.6
 }
 
-fn measure_cell(ctx: &egui::Context) -> (f32, f32) {
-    let font = FontId::monospace(FONT_SIZE);
+fn cell_height_estimate(font_size: f32) -> f32 {
+    font_size * 1.25
+}
+
+pub fn cell_size(ctx: &egui::Context, font_size: f32) -> (f32, f32) {
+    measure_cell(ctx, font_size)
+}
+
+fn measure_cell(ctx: &egui::Context, font_size: f32) -> (f32, f32) {
+    let font = FontId::monospace(font_size);
     ctx.fonts(|fonts| {
         let g = fonts.layout_no_wrap("M".to_string(), font, Color32::WHITE);
         (g.rect.width(), g.rect.height())
@@ -41,12 +50,12 @@ fn grid_size_for_cell_metrics(
     (cols, rows)
 }
 
-pub fn compute_grid_size(body_width: f32, body_height: f32) -> (u16, u16) {
+pub fn compute_grid_size(body_width: f32, body_height: f32, font_size: f32) -> (u16, u16) {
     let (cols, rows) = grid_size_for_cell_metrics(
         body_width,
         body_height,
-        CELL_WIDTH_ESTIMATE,
-        CELL_HEIGHT_ESTIMATE,
+        cell_width_estimate(font_size),
+        cell_height_estimate(font_size),
     );
     (cols as u16, rows as u16)
 }
@@ -55,8 +64,9 @@ pub fn compute_grid_size_from_ctx(
     ctx: &egui::Context,
     body_width: f32,
     body_height: f32,
+    font_size: f32,
 ) -> (u16, u16) {
-    let (cw, ch) = measure_cell(ctx);
+    let (cw, ch) = measure_cell(ctx, font_size);
     let (cols, rows) = grid_size_for_cell_metrics(body_width, body_height, cw, ch);
     (cols as u16, rows as u16)
 }
@@ -74,8 +84,9 @@ pub fn render_terminal(
     transform: egui::emath::TSTransform,
     screen_clip: Rect,
     _panel_id: uuid::Uuid,
+    font_size: f32,
 ) {
-    let (cw, ch) = measure_cell(ctx);
+    let (cw, ch) = measure_cell(ctx, font_size);
     if cw < 1.0 || ch < 1.0 {
         return;
     }
@@ -85,7 +96,7 @@ pub fn render_terminal(
         grid_size_for_cell_metrics(body_rect.width(), body_rect.height(), cw, ch);
 
     // --- Screen-space setup ---
-    let screen_font_size = FONT_SIZE * zoom;
+    let screen_font_size = font_size * zoom;
     let screen_font = FontId::monospace(screen_font_size);
     let screen_cw = cw * zoom;
     let screen_ch = ch * zoom;

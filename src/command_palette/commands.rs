@@ -13,6 +13,9 @@ pub enum Command {
     ZoomOut,
     ZoomReset,
     ZoomToFit,
+    FontZoomIn,
+    FontZoomOut,
+    FontZoomReset,
     FocusNext,
     FocusPrev,
     ToggleFullscreen,
@@ -86,6 +89,21 @@ pub const COMMANDS: &[CommandEntry] = &[
         command: Command::ZoomReset,
         label: "Reset Zoom",
         shortcut: "Ctrl+0",
+    },
+    CommandEntry {
+        command: Command::FontZoomIn,
+        label: "Increase Font Size",
+        shortcut: "Ctrl+Shift+=",
+    },
+    CommandEntry {
+        command: Command::FontZoomOut,
+        label: "Decrease Font Size",
+        shortcut: "Ctrl+Shift+-",
+    },
+    CommandEntry {
+        command: Command::FontZoomReset,
+        label: "Reset Font Size",
+        shortcut: "",
     },
     CommandEntry {
         command: Command::ToggleFullscreen,

@@ -67,6 +67,37 @@ pub const VOID_SHORTCUTS: &[(Modifiers, Key)] = &[
         },
         Key::T,
     ),
+    // Font zoom: Ctrl+Shift+= / Ctrl+Shift+-
+    (
+        Modifiers {
+            alt: false,
+            ctrl: true,
+            shift: true,
+            mac_cmd: false,
+            command: false,
+        },
+        Key::Equals,
+    ),
+    (
+        Modifiers {
+            alt: false,
+            ctrl: true,
+            shift: true,
+            mac_cmd: false,
+            command: false,
+        },
+        Key::Plus,
+    ),
+    (
+        Modifiers {
+            alt: false,
+            ctrl: true,
+            shift: true,
+            mac_cmd: false,
+            command: false,
+        },
+        Key::Minus,
+    ),
 ];
 
 pub struct TerminalPanel {
@@ -182,10 +213,11 @@ impl TerminalPanel {
         size: Vec2,
         color: Color32,
         cwd: Option<&std::path::Path>,
+        font_size: f32,
     ) -> Self {
         let content_size = Self::terminal_content_size(size);
         let (cols, rows) =
-            crate::terminal::renderer::compute_grid_size(content_size.x, content_size.y);
+            crate::terminal::renderer::compute_grid_size(content_size.x, content_size.y, font_size);
         let mut title = cwd
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
@@ -258,12 +290,13 @@ impl TerminalPanel {
         ctx: &egui::Context,
         state: &crate::state::persistence::PanelState,
         cwd: Option<&std::path::Path>,
+        font_size: f32,
     ) -> Self {
         let position = Pos2::new(state.position[0], state.position[1]);
         let size = Vec2::new(state.size[0], state.size[1]);
         let color = Color32::from_rgb(state.color[0], state.color[1], state.color[2]);
 
-        let mut panel = Self::new_with_terminal(ctx, position, size, color, cwd);
+        let mut panel = Self::new_with_terminal(ctx, position, size, color, cwd, font_size);
         panel.z_index = state.z_index;
         panel.focused = state.focused;
         panel
@@ -340,7 +373,7 @@ impl TerminalPanel {
         Self::terminal_body_rect(self.rect()).contains(canvas_pos)
     }
 
-    pub fn handle_scroll(&mut self, ctx: &egui::Context, scroll_y: f32) {
+    pub fn handle_scroll(&mut self, ctx: &egui::Context, scroll_y: f32, font_size: f32) {
         let Some(pty) = &self.pty else {
             return;
         };
@@ -348,7 +381,7 @@ impl TerminalPanel {
             return;
         }
 
-        let (_, row_height) = crate::terminal::renderer::cell_size(ctx);
+        let (_, row_height) = crate::terminal::renderer::cell_size(ctx, font_size);
         let row_height = row_height.max(1.0);
 
         self.scroll_remainder += scroll_y;
@@ -462,13 +495,14 @@ impl TerminalPanel {
         }
     }
 
-    pub fn check_resize(&mut self, ctx: &egui::Context) {
+    pub fn check_resize(&mut self, ctx: &egui::Context, font_size: f32) {
         if let Some(pty) = &self.pty {
             let content_size = Self::terminal_content_size(self.size);
             let (cols, rows) = crate::terminal::renderer::compute_grid_size_from_ctx(
                 ctx,
                 content_size.x,
                 content_size.y,
+                font_size,
             );
             if cols != self.last_cols || rows != self.last_rows {
                 self.last_cols = cols;
@@ -489,8 +523,14 @@ impl TerminalPanel {
     }
 
     /// Convert pointer position to terminal cell (col, row), clamped to grid bounds.
-    fn pos_to_cell(&self, pos: Pos2, body: Rect, ctx: &egui::Context) -> (usize, usize) {
-        let (cw, ch) = crate::terminal::renderer::cell_size(ctx);
+    fn pos_to_cell(
+        &self,
+        pos: Pos2,
+        body: Rect,
+        ctx: &egui::Context,
+        font_size: f32,
+    ) -> (usize, usize) {
+        let (cw, ch) = crate::terminal::renderer::cell_size(ctx, font_size);
         let col = ((pos.x - body.min.x - crate::terminal::renderer::PAD_X) / cw)
             .floor()
             .clamp(0.0, (self.last_cols as f32) - 1.0) as usize;
@@ -517,8 +557,9 @@ impl TerminalPanel {
         ui: &mut egui::Ui,
         transform: egui::emath::TSTransform,
         screen_clip: Rect,
+        font_size: f32,
     ) -> PanelInteraction {
-        self.check_resize(ui.ctx());
+        self.check_resize(ui.ctx(), font_size);
         let mut ix = PanelInteraction::default();
         let pr = self.rect();
         let painter = ui.painter();
@@ -657,6 +698,7 @@ impl TerminalPanel {
                     transform,
                     screen_clip,
                     self.id,
+                    font_size,
                 );
                 scrollbar_state = Some(ScrollbarState {
                     history_size: term.grid().history_size(),
@@ -769,7 +811,7 @@ impl TerminalPanel {
         // We adjust by the scroll delta so the highlight follows content and scrolls off-screen.
         if local_interactions_enabled {
             if let Some((sc, sr, ec, er)) = self.selection {
-                let (cw, ch) = crate::terminal::renderer::cell_size(ui.ctx());
+                let (cw, ch) = crate::terminal::renderer::cell_size(ui.ctx(), font_size);
                 let pad_x = crate::terminal::renderer::PAD_X;
                 let pad_y = crate::terminal::renderer::PAD_Y;
                 let max_col = self.last_cols as usize;
@@ -1077,7 +1119,7 @@ impl TerminalPanel {
                 2 => {
                     // Double-click: select word
                     if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                         if let Some((start, end)) = self.word_boundaries_at(col, row) {
                             self.selection = Some((start, row, end, row));
                             self.selection_display_offset =
@@ -1088,7 +1130,7 @@ impl TerminalPanel {
                 3 => {
                     // Triple-click: select entire line
                     if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                         let last_col = (self.last_cols as usize).saturating_sub(1);
                         self.selection = Some((0, row, last_col, row));
                         self.selection_display_offset =
@@ -1105,7 +1147,7 @@ impl TerminalPanel {
         if local_interactions_enabled && body_resp.drag_started_by(egui::PointerButton::Primary) {
             ix.clicked = true;
             if let Some(pos) = body_resp.interact_pointer_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                 self.selection = Some((col, row, col, row));
                 self.selection_display_offset =
                     scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
@@ -1117,13 +1159,13 @@ impl TerminalPanel {
             && body_resp.dragged_by(egui::PointerButton::Primary)
         {
             if let Some(pos) = body_resp.hover_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                 if let Some(ref mut sel) = self.selection {
                     sel.2 = col;
                     sel.3 = row;
                 }
             } else if let Some(pos) = body_resp.interact_pointer_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                 if let Some(ref mut sel) = self.selection {
                     sel.2 = col;
                     sel.3 = row;
@@ -1155,7 +1197,7 @@ impl TerminalPanel {
                 {
                     ix.clicked = true;
                     if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                         send_mouse(0, col, row, true);
                     }
                 }
@@ -1163,7 +1205,7 @@ impl TerminalPanel {
                 if body_resp.clicked_by(egui::PointerButton::Middle) {
                     ix.clicked = true;
                     if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                         send_mouse(1, col, row, true);
                         send_mouse(1, col, row, false);
                     }
@@ -1171,7 +1213,7 @@ impl TerminalPanel {
                 // Right click
                 if body_resp.clicked_by(egui::PointerButton::Secondary) {
                     if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                         send_mouse(2, col, row, true);
                         send_mouse(2, col, row, false);
                     }
@@ -1179,14 +1221,14 @@ impl TerminalPanel {
                 // Mouse drag (motion with button held)
                 if body_resp.dragged_by(egui::PointerButton::Primary) {
                     if let Some(pos) = body_resp.hover_pos().or(body_resp.interact_pointer_pos()) {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                         send_mouse(32, col, row, true);
                     }
                 }
                 // Click release
                 if body_resp.drag_stopped() {
                     if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx(), font_size);
                         send_mouse(0, col, row, false);
                     }
                 }
