@@ -287,12 +287,46 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      - name: Generate changelog from commits
+        id: changelog
+        shell: bash
+        run: |
+          TAG="${{ needs.preflight.outputs.tag }}"
+          # Find previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -1)
+
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+
+          echo "Generating changelog for ${RANGE}"
+
+          # Collect commits grouped by type
+          FEATS=$(git log --pretty=format:"* %s" --no-merges "$RANGE" | grep -i "^\\* feat" || true)
+          FIXES=$(git log --pretty=format:"* %s" --no-merges "$RANGE" | grep -i "^\\* fix" || true)
+          REFACTORS=$(git log --pretty=format:"* %s" --no-merges "$RANGE" | grep -i "^\\* refactor" || true)
+          OTHERS=$(git log --pretty=format:"* %s" --no-merges "$RANGE" | grep -iv "^\\* feat\|^\\* fix\|^\\* refactor\|^\\* style\|^\\* chore\|^\\* ci\|^\\* docs" || true)
+          MAINTENANCE=$(git log --pretty=format:"* %s" --no-merges "$RANGE" | grep -i "^\\* chore\|^\\* ci\|^\\* style\|^\\* docs" || true)
+
+          {
+            echo "body<<CHANGELOG_EOF"
+            [ -n "$FEATS" ] && printf '## Features\n%s\n\n' "$FEATS"
+            [ -n "$FIXES" ] && printf '## Fixes\n%s\n\n' "$FIXES"
+            [ -n "$REFACTORS" ] && printf '## Refactors\n%s\n\n' "$REFACTORS"
+            [ -n "$OTHERS" ] && printf '## Other\n%s\n\n' "$OTHERS"
+            [ -n "$MAINTENANCE" ] && printf '## Maintenance\n%s\n\n' "$MAINTENANCE"
+            [ -n "$PREV_TAG" ] && printf '**Full Changelog**: %s...%s\n' "$PREV_TAG" "$TAG"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
           name: Void v${{ needs.preflight.outputs.version }}
-          generate_release_notes: true
+          body: ${{ steps.changelog.outputs.body }}
           make_latest: true
           files: release-assets/*
           fail_on_unmatched_files: false
