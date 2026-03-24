@@ -14,7 +14,7 @@
 - Real terminal emulation powered by alacritty_terminal (ANSI/VT100, 256-color, truecolor)
 - Workspaces, command palette, minimap, keyboard-first design
 
-![Demo](assets/demo.png)
+<video src="assets/demo.mp4" autoplay loop muted playsinline></video>
 
 ## Getting Started
 
