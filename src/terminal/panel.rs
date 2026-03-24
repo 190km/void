@@ -437,12 +437,22 @@ impl TerminalPanel {
                     false
                 };
 
-                // If Ctrl+C (0x03) is sent while in ALT_SCREEN, the TUI app is
-                // likely being killed. Schedule a mode reset after 500ms — the app
-                // won't send cleanup sequences when killed by SIGINT.
-                if in_alt_screen && input.bytes.contains(&0x03) {
-                    let now = ctx.input(|i| i.time);
-                    self.pending_mode_reset = Some(now + 0.5);
+                // If we're in ALT_SCREEN and the user sends keyboard input,
+                // schedule a mode reset. This catches ALL exit methods:
+                // - Ctrl+C (SIGINT), Ctrl+D (EOF), normal quit commands, etc.
+                // The 500ms delay lets the TUI app respond — if it's still
+                // running it will re-enter ALT_SCREEN and cancel the reset.
+                // If it exited, the modes are cleaned up automatically.
+                if in_alt_screen {
+                    // Only trigger if there's been no PTY output recently
+                    // (TUI apps constantly output; a quiet terminal = app exited)
+                    let output_stale =
+                        pty.time_since_last_output() > std::time::Duration::from_millis(500);
+
+                    if output_stale || input.bytes.contains(&0x03) {
+                        let now = ctx.input(|i| i.time);
+                        self.pending_mode_reset = Some(now + 0.5);
+                    }
                 }
 
                 pty.write(&input.bytes);

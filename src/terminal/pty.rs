@@ -262,6 +262,14 @@ impl PtyHandle {
         self.alive.load(Ordering::Relaxed)
     }
 
+    /// How long since the last PTY output.
+    pub fn time_since_last_output(&self) -> Duration {
+        self.last_output_at
+            .lock()
+            .map(|t| t.elapsed())
+            .unwrap_or(Duration::from_secs(999))
+    }
+
     pub fn should_hide_cursor_for_streaming_output(&self) -> bool {
         const CURSOR_HIDE_AFTER_OUTPUT: Duration = Duration::from_millis(220);
 
