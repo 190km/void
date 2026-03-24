@@ -15,6 +15,10 @@ categories = ["command-line-utilities", "gui"]
 name = "void"
 path = "src/main.rs"
 
+[[bin]]
+name = "void-ctl"
+path = "src/bin/void-ctl.rs"
+
 [dependencies]
 # GUI
 eframe = { version = "0.30", default-features = false, features = ["wgpu", "wayland", "x11"] }
