@@ -97,6 +97,10 @@ pub struct TerminalPanel {
     /// so accumulated movement can escape snap zones naturally.
     pub resize_virtual_rect: Option<Rect>,
     bell_flash_until: f64,
+    /// When set, reset terminal modes (ALT_SCREEN, MOUSE_MODE) after this time.
+    /// Triggered when Ctrl+C is sent while in ALT_SCREEN — the TUI app is likely
+    /// being killed and won't send cleanup escape sequences.
+    pending_mode_reset: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,10 +221,37 @@ impl TerminalPanel {
             drag_virtual_pos: None,
             resize_virtual_rect: None,
             bell_flash_until: 0.0,
+            pending_mode_reset: None,
         }
     }
 
-
+    #[allow(dead_code)]
+    pub fn new(title: impl Into<String>, position: Pos2, size: Vec2, color: Color32) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            title: title.into(),
+            position,
+            size,
+            color,
+            z_index: 0,
+            focused: false,
+            pty: None,
+            last_cols: 80,
+            last_rows: 24,
+            spawn_error: None,
+            selection: None,
+            selection_display_offset: 0,
+            selecting: false,
+            scroll_remainder: 0.0,
+            scrollbar_grab_offset: None,
+            last_click_time: 0.0,
+            click_count: 0,
+            drag_virtual_pos: None,
+            resize_virtual_rect: None,
+            bell_flash_until: 0.0,
+            pending_mode_reset: None,
+        }
+    }
 
     /// Create a panel from saved state, spawning a new terminal process.
     pub fn from_saved(
@@ -396,12 +427,24 @@ impl TerminalPanel {
             }
             if !input.bytes.is_empty() {
                 // Any keyboard input snaps scroll back to bottom (standard terminal behavior)
-                if let Ok(mut term) = pty.term.lock() {
+                let in_alt_screen = if let Ok(mut term) = pty.term.lock() {
                     let offset = term.grid().display_offset();
                     if offset != 0 {
                         term.scroll_display(alacritty_terminal::grid::Scroll::Bottom);
                     }
+                    term.mode().contains(TermMode::ALT_SCREEN)
+                } else {
+                    false
+                };
+
+                // If Ctrl+C (0x03) is sent while in ALT_SCREEN, the TUI app is
+                // likely being killed. Schedule a mode reset after 500ms — the app
+                // won't send cleanup sequences when killed by SIGINT.
+                if in_alt_screen && input.bytes.contains(&0x03) {
+                    let now = ctx.input(|i| i.time);
+                    self.pending_mode_reset = Some(now + 0.5);
                 }
+
                 pty.write(&input.bytes);
                 self.selection = None;
             }
@@ -556,17 +599,34 @@ impl TerminalPanel {
             .is_some_and(|pty| pty.should_hide_cursor_for_streaming_output());
 
         if let Some(pty) = &self.pty {
+            // Check pending mode reset: if Ctrl+C was sent while in ALT_SCREEN
+            // and the timer has expired, feed reset sequences to the VTE parser.
+            // This cleans up stale ALT_SCREEN/MOUSE_MODE from killed TUI apps.
+            if let Some(reset_at) = self.pending_mode_reset {
+                let now = ui.input(|i| i.time);
+                if now >= reset_at {
+                    self.pending_mode_reset = None;
+                    if let Ok(mut term) = pty.term.lock() {
+                        if term.mode().contains(TermMode::ALT_SCREEN) {
+                            let mut processor: alacritty_terminal::vte::ansi::Processor =
+                                alacritty_terminal::vte::ansi::Processor::new();
+                            // Exit alt screen, disable mouse tracking + SGR mouse,
+                            // reset cursor keys, disable bracketed paste
+                            processor.advance(
+                                &mut *term,
+                                b"\x1b[?1049l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b[?2004l",
+                            );
+                        }
+                    }
+                }
+            }
+
             if let Ok(term) = pty.term.lock() {
                 use alacritty_terminal::grid::Dimensions;
 
-                // Selection is disabled ONLY when in ALT_SCREEN (full-screen TUI app
-                // like vim, htop, lazygit). MOUSE_MODE alone does NOT block selection
-                // because programs often leave stale mouse mode flags after exiting
-                // (e.g., Ctrl+C out of opencode). Shift forces selection on always.
-                let shift_held = ui.input(|i| i.modifiers.shift);
-                let in_alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
-                local_interactions_enabled =
-                    !in_alt_screen || !pty.is_alive() || shift_held;
+                local_interactions_enabled = !term
+                    .mode()
+                    .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE);
                 crate::terminal::renderer::render_terminal(
                     ui.ctx(),
                     painter,
@@ -975,102 +1035,87 @@ impl TerminalPanel {
         }
 
         // Body: click + drag (for selection or mouse forwarding) + focus
-        //
-        // Use BOTH egui's interact() AND raw pointer tracking. The interact()
-        // provides hover/cursor and context menu support. Raw pointer tracking
-        // ensures selection works reliably regardless of canvas transform issues.
         let body_resp = ui.interact(
             content_rect,
             egui::Id::new(self.id).with("body"),
             egui::Sense::click_and_drag(),
         );
 
-        // Raw pointer tracking for selection — works in screen space,
-        // bypasses potential transform/layer interaction priority bugs.
-        let screen_content = Rect::from_min_max(
-            transform * content_rect.min,
-            transform * content_rect.max,
-        );
-        let pointer = ui.input(|i| {
-            (
-                i.pointer.hover_pos(),
-                i.pointer.primary_pressed(),
-                i.pointer.primary_released(),
-                i.pointer.primary_down(),
-                i.time,
-            )
-        });
-        let (hover_pos, primary_pressed, primary_released, primary_down, now) = pointer;
-        let pointer_in_body = hover_pos
-            .map(|p| screen_content.contains(p))
-            .unwrap_or(false);
-        // Convert screen pointer to canvas space for cell calculations
-        let canvas_pointer = hover_pos.map(|p| transform.inverse() * p);
+        if body_resp.clicked_by(egui::PointerButton::Primary) {
+            ix.clicked = true;
 
-        if local_interactions_enabled {
-            // Click detection — primary pressed inside body
-            if primary_pressed && pointer_in_body {
-                ix.clicked = true;
+            // Track click count for double/triple click
+            let now = ui.input(|i| i.time);
+            if now - self.last_click_time < 0.4 {
+                self.click_count = (self.click_count + 1).min(3);
+            } else {
+                self.click_count = 1;
+            }
+            self.last_click_time = now;
 
-                // Track click count for double/triple click
-                if now - self.last_click_time < 0.4 {
-                    self.click_count = (self.click_count + 1).min(3);
-                } else {
-                    self.click_count = 1;
-                }
-                self.last_click_time = now;
-
-                if let Some(pos) = canvas_pointer {
-                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-
-                    match self.click_count {
-                        2 => {
-                            // Double-click: select word
-                            if let Some((start, end)) = self.word_boundaries_at(col, row) {
-                                self.selection = Some((start, row, end, row));
-                                self.selection_display_offset =
-                                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
-                            }
-                        }
-                        3 => {
-                            // Triple-click: select entire line
-                            let last_col = (self.last_cols as usize).saturating_sub(1);
-                            self.selection = Some((0, row, last_col, row));
+            match self.click_count {
+                2 => {
+                    // Double-click: select word
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        if let Some((start, end)) = self.word_boundaries_at(col, row) {
+                            self.selection = Some((start, row, end, row));
                             self.selection_display_offset =
                                 scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                         }
-                        _ => {
-                            // Single click: start selection at this point
-                            self.selection = Some((col, row, col, row));
-                            self.selection_display_offset =
-                                scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
-                            self.selecting = true;
-                        }
                     }
                 }
-            }
-
-            // Drag to extend selection
-            if self.selecting && primary_down && !primary_pressed {
-                if let Some(pos) = canvas_pointer {
-                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                    if let Some(ref mut sel) = self.selection {
-                        sel.2 = col;
-                        sel.3 = row;
+                3 => {
+                    // Triple-click: select entire line
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        let last_col = (self.last_cols as usize).saturating_sub(1);
+                        self.selection = Some((0, row, last_col, row));
+                        self.selection_display_offset =
+                            scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                     }
                 }
-            }
-
-            // Release: stop extending selection.
-            // Don't clear on release — selection is replaced on next click instead.
-            if primary_released {
-                self.selecting = false;
+                _ => {
+                    self.selection = None;
+                }
             }
         }
 
+        // Text selection via drag
+        if local_interactions_enabled && body_resp.drag_started_by(egui::PointerButton::Primary) {
+            ix.clicked = true;
+            if let Some(pos) = body_resp.interact_pointer_pos() {
+                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                self.selection = Some((col, row, col, row));
+                self.selection_display_offset =
+                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
+                self.selecting = true;
+            }
+        }
+        if local_interactions_enabled
+            && self.selecting
+            && body_resp.dragged_by(egui::PointerButton::Primary)
+        {
+            if let Some(pos) = body_resp.hover_pos() {
+                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                if let Some(ref mut sel) = self.selection {
+                    sel.2 = col;
+                    sel.3 = row;
+                }
+            } else if let Some(pos) = body_resp.interact_pointer_pos() {
+                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                if let Some(ref mut sel) = self.selection {
+                    sel.2 = col;
+                    sel.3 = row;
+                }
+            }
+        }
+        if local_interactions_enabled && body_resp.drag_stopped() {
+            self.selecting = false;
+        }
+
         // Mouse forwarding to PTY in mouse mode (for TUI apps: htop, lazygit, vim, etc.)
-        // Uses raw pointer events for reliable detection regardless of canvas transform.
-        if !local_interactions_enabled && pointer_in_body {
+        if !local_interactions_enabled {
             if let Some(pty) = &self.pty {
                 let mods = ui.input(|i| i.modifiers);
                 let mod_bits: u8 = if mods.shift { 4 } else { 0 }
@@ -1084,42 +1129,45 @@ impl TerminalPanel {
                     pty.write(seq.as_bytes());
                 };
 
-                if let Some(pos) = canvas_pointer {
-                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-
-                    // Left click press
-                    if primary_pressed {
-                        ix.clicked = true;
+                // Left click press
+                if body_resp.clicked_by(egui::PointerButton::Primary)
+                    || body_resp.drag_started_by(egui::PointerButton::Primary)
+                {
+                    ix.clicked = true;
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                         send_mouse(0, col, row, true);
                     }
-                    // Mouse drag (motion with button held)
-                    if primary_down && !primary_pressed {
-                        send_mouse(32, col, row, true);
-                    }
-                    // Click release
-                    if primary_released {
-                        send_mouse(0, col, row, false);
-                    }
                 }
-
                 // Middle click
-                let middle_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Middle));
-                if middle_pressed {
-                    if let Some(pos) = canvas_pointer {
-                        ix.clicked = true;
+                if body_resp.clicked_by(egui::PointerButton::Middle) {
+                    ix.clicked = true;
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
                         let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                         send_mouse(1, col, row, true);
                         send_mouse(1, col, row, false);
                     }
                 }
-
                 // Right click
-                let secondary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
-                if secondary_pressed {
-                    if let Some(pos) = canvas_pointer {
+                if body_resp.clicked_by(egui::PointerButton::Secondary) {
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
                         let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                         send_mouse(2, col, row, true);
                         send_mouse(2, col, row, false);
+                    }
+                }
+                // Mouse drag (motion with button held)
+                if body_resp.dragged_by(egui::PointerButton::Primary) {
+                    if let Some(pos) = body_resp.hover_pos().or(body_resp.interact_pointer_pos()) {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        send_mouse(32, col, row, true);
+                    }
+                }
+                // Click release
+                if body_resp.drag_stopped() {
+                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        send_mouse(0, col, row, false);
                     }
                 }
             }
@@ -1200,15 +1248,6 @@ impl TerminalPanel {
             if ui.button("Clear Scrollback").clicked() {
                 if let Some(pty) = &self.pty {
                     pty.write(b"\x1b[3J");
-                }
-                ui.close_menu();
-            }
-            if ui.button("Reset Mouse/Modes").clicked() {
-                // Soft reset: exit alt screen, disable mouse tracking, disable
-                // bracketed paste. Fixes stale modes from programs that didn't
-                // clean up (e.g., Ctrl+C out of a TUI app).
-                if let Some(pty) = &self.pty {
-                    pty.write(b"\x1b[?1049l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b[?2004l");
                 }
                 ui.close_menu();
             }

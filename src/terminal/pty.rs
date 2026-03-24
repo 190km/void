@@ -129,7 +129,6 @@ impl PtyHandle {
         let ctx_clone_wait = ctx.clone();
 
         let event_thread = thread::spawn(move || {
-            let mut last_repaint = Instant::now();
             while let Ok(event) = event_rx.recv() {
                 match event {
                     Event::PtyWrite(text) => {
@@ -160,32 +159,15 @@ impl PtyHandle {
                             let _ = clipboard.set_text(data);
                         }
                     }
-                    Event::ClipboardLoad(_clipboard_type, formatter) => {
-                        // OSC 52 query: program wants to read clipboard contents
-                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                            if let Ok(text) = clipboard.get_text() {
-                                let response = formatter(&text);
-                                if let Ok(mut w) = writer_clone.lock() {
-                                    let _ = w.write_all(response.as_bytes());
-                                    let _ = w.flush();
-                                }
-                            }
-                        }
-                    }
-                    Event::ColorRequest(index, _) => {
-                        log::debug!("Unhandled ColorRequest for index {}", index);
-                    }
                     Event::Wakeup
                     | Event::MouseCursorDirty
                     | Event::CursorBlinkingChange
+                    | Event::ClipboardLoad(_, _)
+                    | Event::ColorRequest(_, _)
                     | Event::TextAreaSizeRequest(_) => {}
                 }
 
-                // Throttle repaints to ~60fps to avoid excessive redraws during heavy output
-                if last_repaint.elapsed() >= Duration::from_millis(16) {
-                    ctx_clone_events.request_repaint();
-                    last_repaint = Instant::now();
-                }
+                ctx_clone_events.request_repaint();
                 if !alive_clone_events.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -195,7 +177,6 @@ impl PtyHandle {
         let reader_thread = thread::spawn(move || {
             let mut processor: Processor = Processor::new();
             let mut buf = [0u8; 4096];
-            let mut last_repaint = Instant::now();
 
             loop {
                 match reader.read(&mut buf) {
@@ -212,11 +193,7 @@ impl PtyHandle {
                             *last_output = Instant::now();
                         }
 
-                        // Throttle repaints to ~60fps to avoid excessive redraws during heavy output
-                        if last_repaint.elapsed() >= Duration::from_millis(16) {
-                            ctx_clone.request_repaint();
-                            last_repaint = Instant::now();
-                        }
+                        ctx_clone.request_repaint();
                     }
                     Err(e) => {
                         log::debug!("PTY read error: {e}");
@@ -226,21 +203,6 @@ impl PtyHandle {
             }
 
             alive_clone.store(false, Ordering::Relaxed);
-
-            // Feed a terminal reset sequence so alacritty_terminal clears
-            // ALT_SCREEN, MOUSE_MODE, etc. Programs killed with Ctrl+C
-            // don't send cleanup escapes, leaving stale mode flags.
-            if let Ok(mut term) = term_clone.lock() {
-                // \x1b[?1049l = exit alt screen
-                // \x1b[?1003l = disable any-event mouse tracking
-                // \x1b[?1006l = disable SGR mouse mode
-                // \x1b[?1l    = reset cursor keys to normal mode
-                // \x1b[?2004l = disable bracketed paste
-                let reset = b"\x1b[?1049l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b[?2004l";
-                processor.advance(&mut *term, reset);
-            }
-
-            // Always request a final repaint to ensure the last frame is rendered
             ctx_clone.request_repaint();
         });
 
