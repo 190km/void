@@ -559,10 +559,15 @@ impl TerminalPanel {
             if let Ok(term) = pty.term.lock() {
                 use alacritty_terminal::grid::Dimensions;
 
+                // Shift bypasses mouse mode — standard terminal emulator behavior.
+                // This lets users select text even when a TUI app has mouse mode on,
+                // or when a program left stale mouse mode flags after exiting.
+                let shift_held = ui.input(|i| i.modifiers.shift);
                 local_interactions_enabled = !term
                     .mode()
                     .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE)
-                    || !pty.is_alive();
+                    || !pty.is_alive()
+                    || shift_held;
                 crate::terminal::renderer::render_terminal(
                     ui.ctx(),
                     painter,
@@ -1186,6 +1191,15 @@ impl TerminalPanel {
             if ui.button("Clear Scrollback").clicked() {
                 if let Some(pty) = &self.pty {
                     pty.write(b"\x1b[3J");
+                }
+                ui.close_menu();
+            }
+            if ui.button("Reset Mouse/Modes").clicked() {
+                // Soft reset: exit alt screen, disable mouse tracking, disable
+                // bracketed paste. Fixes stale modes from programs that didn't
+                // clean up (e.g., Ctrl+C out of a TUI app).
+                if let Some(pty) = &self.pty {
+                    pty.write(b"\x1b[?1049l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b[?2004l");
                 }
                 ui.close_menu();
             }
