@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex};
 
+use sha2::{Digest, Sha256};
+
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASES_URL: &str = "https://api.github.com/repos/190km/void/releases/latest";
 const REQUEST_TIMEOUT: u64 = 15; // seconds
@@ -391,7 +393,73 @@ fn download_asset(url: &str) -> Result<String, String> {
 
     std::fs::write(&path, resp.as_bytes()).map_err(|e| format!("Write failed: {e}"))?;
 
+    // Attempt to download and verify the SHA256 checksum
+    let checksum_url = format!("{url}.sha256");
+    match download_checksum(&checksum_url) {
+        Some(expected_hash) => {
+            if verify_checksum(&path, &expected_hash) {
+                log::info!("SHA256 checksum verified for {filename}");
+            } else {
+                // Checksum mismatch — remove the downloaded file and abort
+                let _ = std::fs::remove_file(&path);
+                return Err(format!(
+                    "SHA256 checksum mismatch for {filename}. \
+                     The downloaded file may be corrupted or tampered with."
+                ));
+            }
+        }
+        None => {
+            log::warn!(
+                "No SHA256 checksum file found at {checksum_url}. \
+                 Skipping integrity verification."
+            );
+        }
+    }
+
     Ok(path.to_string_lossy().to_string())
+}
+
+/// Download the `.sha256` checksum file and extract the hex hash.
+/// Returns `None` if the file cannot be fetched (e.g. old releases without checksums).
+fn download_checksum(checksum_url: &str) -> Option<String> {
+    let resp = minreq::get(checksum_url)
+        .with_header("User-Agent", "void-terminal")
+        .with_timeout(REQUEST_TIMEOUT)
+        .send()
+        .ok()?;
+
+    if resp.status_code != 200 {
+        return None;
+    }
+
+    let body = resp.as_str().ok()?;
+
+    // The checksum file may be in sha256sum format: "<hash>  <filename>"
+    // or just the bare hex hash. Take the first whitespace-delimited token.
+    let hash = body.split_whitespace().next()?;
+
+    // Sanity check: a SHA256 hex string is exactly 64 characters
+    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(hash.to_string())
+    } else {
+        log::warn!("Checksum file content does not look like a valid SHA256 hash");
+        None
+    }
+}
+
+/// Compute the SHA256 hash of a file and compare it to the expected hex hash.
+fn verify_checksum(file_path: &std::path::Path, expected_hash: &str) -> bool {
+    let Ok(mut file) = std::fs::File::open(file_path) else {
+        return false;
+    };
+
+    let mut hasher = Sha256::new();
+    if std::io::copy(&mut file, &mut hasher).is_err() {
+        return false;
+    }
+
+    let computed = format!("{:x}", hasher.finalize());
+    computed == expected_hash.trim().to_lowercase()
 }
 
 /// Returns true if `latest` is strictly newer than `current`.
@@ -413,5 +481,38 @@ mod tests {
         assert!(version_newer("1.0.0", "0.9.9"));
         assert!(!version_newer("0.0.1", "0.0.1"));
         assert!(!version_newer("0.0.1", "0.0.2"));
+    }
+
+    #[test]
+    fn checksum_verification_succeeds_for_matching_hash() {
+        let dir = std::env::temp_dir();
+        let test_file = dir.join("void_checksum_test_ok.bin");
+        let data = b"hello void";
+        std::fs::write(&test_file, data).unwrap();
+
+        // Pre-computed SHA256 of b"hello void"
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let expected = format!("{:x}", hasher.finalize());
+
+        assert!(verify_checksum(&test_file, &expected));
+        let _ = std::fs::remove_file(&test_file);
+    }
+
+    #[test]
+    fn checksum_verification_fails_for_wrong_hash() {
+        let dir = std::env::temp_dir();
+        let test_file = dir.join("void_checksum_test_bad.bin");
+        std::fs::write(&test_file, b"hello void").unwrap();
+
+        let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+        assert!(!verify_checksum(&test_file, wrong_hash));
+        let _ = std::fs::remove_file(&test_file);
+    }
+
+    #[test]
+    fn checksum_verification_handles_missing_file() {
+        let missing = std::path::Path::new("/tmp/void_nonexistent_file_12345.bin");
+        assert!(!verify_checksum(missing, "abcd1234"));
     }
 }
