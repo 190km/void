@@ -16,6 +16,7 @@ pub enum Command {
     FocusNext,
     FocusPrev,
     ToggleFullscreen,
+    OpenApplication,
 }
 
 /// A registered command with display info.
@@ -91,5 +92,10 @@ pub const COMMANDS: &[CommandEntry] = &[
         command: Command::ToggleFullscreen,
         label: "Toggle Fullscreen",
         shortcut: "F11",
+    },
+    CommandEntry {
+        command: Command::OpenApplication,
+        label: "Open Application",
+        shortcut: "Ctrl+Shift+A",
     },
 ];

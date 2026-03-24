@@ -117,7 +117,7 @@ impl Workspace {
     /// 1. Doesn't overlap anything
     /// 2. Is closest to the center of the existing layout (fills gaps first)
     /// 3. Minimizes the total bounding box (keeps things compact)
-    fn find_free_position(&self, size: Vec2) -> egui::Pos2 {
+    pub fn find_free_position(&self, size: Vec2) -> egui::Pos2 {
         if self.panels.is_empty() {
             return egui::Pos2::new(50.0, 50.0);
         }

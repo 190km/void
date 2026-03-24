@@ -1,9 +1,11 @@
 use eframe::egui;
 use egui::{Color32, Pos2, Vec2};
 
+use crate::application::picker::AppPicker;
 use crate::canvas::viewport::Viewport;
 use crate::command_palette::commands::Command;
 use crate::command_palette::CommandPalette;
+use crate::panel::CanvasPanel;
 use crate::sidebar::{Sidebar, SidebarResponse, SIDEBAR_BG, SIDEBAR_BORDER, SIDEBAR_PADDING_H};
 use crate::state::workspace::Workspace;
 use crate::terminal::panel::PanelAction;
@@ -35,6 +37,9 @@ pub struct VoidApp {
     brand_texture: egui::TextureHandle,
     sidebar: Sidebar,
     update_checker: UpdateChecker,
+    app_picker: AppPicker,
+    #[cfg(windows)]
+    void_hwnd: Option<windows::Win32::Foundation::HWND>,
 }
 
 impl VoidApp {
@@ -106,6 +111,9 @@ impl VoidApp {
             brand_texture,
             sidebar: Sidebar::default(),
             update_checker: UpdateChecker::new(cc.egui_ctx.clone()),
+            app_picker: AppPicker::default(),
+            #[cfg(windows)]
+            void_hwnd: None,
         }
     }
 
@@ -237,7 +245,31 @@ impl VoidApp {
                 let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
             }
+            Command::OpenApplication => {
+                self.app_picker.open = true;
+            }
         }
+    }
+
+    fn spawn_application(&mut self, app_entry: &crate::application::registry::AppEntry) {
+        let ws = self.ws_mut();
+        let color = PANEL_COLORS[ws.next_color % PANEL_COLORS.len()];
+        ws.next_color += 1;
+
+        let size = Vec2::new(800.0, 600.0);
+        let position = ws.find_free_position(size);
+
+        for p in &mut ws.panels {
+            p.set_focused(false);
+        }
+
+        let mut panel = crate::application::panel::ApplicationPanel::new(
+            app_entry, position, size, color, ws.next_z,
+        );
+        panel.focused = true;
+        ws.next_z += 1;
+
+        ws.panels.push(CanvasPanel::Application(panel));
     }
 
     fn zoom_to_fit(&mut self, screen_rect: egui::Rect) {
@@ -298,6 +330,8 @@ impl VoidApp {
                 cmd = Some(Command::ZoomToFit);
             } else if i.key_pressed(egui::Key::F2) && !i.modifiers.ctrl {
                 cmd = Some(Command::RenameTerminal);
+            } else if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::A) {
+                cmd = Some(Command::OpenApplication);
             }
         });
         cmd
@@ -369,6 +403,17 @@ impl eframe::App for VoidApp {
         // Command palette
         if let Some(cmd) = self.command_palette.show(ctx) {
             self.execute_command(cmd, ctx, canvas_rect_for_commands);
+        }
+
+        // App picker
+        if let Some(app_entry) = self.app_picker.show(ctx) {
+            self.spawn_application(app_entry);
+        }
+
+        // Get Void's HWND for window embedding (Windows only)
+        #[cfg(windows)]
+        if self.void_hwnd.is_none() {
+            self.void_hwnd = crate::application::embed::platform::find_void_hwnd();
         }
 
         // Rename dialog
@@ -621,6 +666,8 @@ impl eframe::App for VoidApp {
                 order.sort_by_key(|&i| self.ws().panels[i].z_index());
 
                 let mut interactions = Vec::new();
+                #[cfg(windows)]
+                let void_hwnd = self.void_hwnd;
                 for &idx in &order {
                     if !self
                         .viewport
@@ -628,7 +675,13 @@ impl eframe::App for VoidApp {
                     {
                         continue;
                     }
-                    let ix = self.ws_mut().panels[idx].show(ui, transform, canvas_rect);
+                    let ix = self.ws_mut().panels[idx].show(
+                        ui,
+                        transform,
+                        canvas_rect,
+                        #[cfg(windows)]
+                        void_hwnd,
+                    );
                     if ix.clicked || ix.dragging_title || ix.resizing || ix.action.is_some() {
                         interactions.push((idx, ix));
                     }

@@ -1,0 +1,7 @@
+Lis `orchestration-communication.md` a la racine du projet et le plan `C:\Users\bro\.claude\plans\radiant-weaving-iverson.md`. Ces deux documents decrivent l'architecture complete pour :
+
+1. **Application Embedding** — Embedder des apps natives (Brave, VS Code) comme panels interactifs sur le canvas via Win32 `SetParent`. Le plan dans `radiant-weaving-iverson.md` contient les 7 etapes d'implementation, les structs, le flow complet.
+
+2. **Terminal Orchestration** — Un systeme de communication inter-terminaux via APC escape sequences (pas de socket). Le doc `orchestration-communication.md` contient toute l'architecture : Terminal Bus, groupes, shared context, void-ctl CLI, title bar status badges. ~4800 lignes de spec complete avec le code Rust.
+
+Implemente le plan d'Application Embedding (le fichier `radiant-weaving-iverson.md`). Windows uniquement pour l'instant. Suis les etapes exactement comme decrites. Les fichiers a creer/modifier sont listes dans la section "Files Summary" du plan.
