@@ -94,12 +94,19 @@ src/
 - [x] Command palette with fuzzy matching
 - [x] Minimap navigation
 - [x] Panel drag, resize, close, rename, focus cycling
-- [ ] Session persistence (save/restore on quit)
+- [x] Layout persistence (save/restore on quit)
+- [x] Snap guides for panel alignment
+- [x] Smart panel positioning (gap-filling algorithm)
+- [x] Resize snap with virtual accumulation (escape snap zones naturally)
+- [x] Terminal input: Ctrl+Backspace, Ctrl+Delete, modifier-aware F-keys
+- [x] Extensible panel system (CanvasPanel enum)
+- [x] Canvas configuration constants (centralized tuning)
+- [x] Auto-update checker with silent install
+- [ ] Session restore (reopen terminals with CWD + scrollback)
 - [ ] Configuration hot-reload (TOML)
-- [ ] Auto-layout engine (tidy, snap, arrange)
+- [ ] Auto-layout engine (tidy, arrange)
 - [ ] Built-in theme engine + custom themes
-- [ ] Text selection & copy
-- [ ] Scrollback interaction
+- [ ] Embedded webviews (CEF/Servo offscreen rendering)
 - [ ] Plugin system
 
 See [STATUS.md](STATUS.md) for detailed progress and [PRD.md](PRD.md) for the full roadmap.
