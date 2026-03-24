@@ -559,15 +559,14 @@ impl TerminalPanel {
             if let Ok(term) = pty.term.lock() {
                 use alacritty_terminal::grid::Dimensions;
 
-                // Shift bypasses mouse mode — standard terminal emulator behavior.
-                // This lets users select text even when a TUI app has mouse mode on,
-                // or when a program left stale mouse mode flags after exiting.
+                // Selection is disabled ONLY when in ALT_SCREEN (full-screen TUI app
+                // like vim, htop, lazygit). MOUSE_MODE alone does NOT block selection
+                // because programs often leave stale mouse mode flags after exiting
+                // (e.g., Ctrl+C out of opencode). Shift forces selection on always.
                 let shift_held = ui.input(|i| i.modifiers.shift);
-                local_interactions_enabled = !term
-                    .mode()
-                    .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE)
-                    || !pty.is_alive()
-                    || shift_held;
+                let in_alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
+                local_interactions_enabled =
+                    !in_alt_screen || !pty.is_alive() || shift_held;
                 crate::terminal::renderer::render_terminal(
                     ui.ctx(),
                     painter,
@@ -1062,14 +1061,10 @@ impl TerminalPanel {
                 }
             }
 
-            // Release: stop selecting. If start == end, clear selection (was just a click).
-            if primary_released && self.selecting {
+            // Release: stop extending selection.
+            // Don't clear on release — selection is replaced on next click instead.
+            if primary_released {
                 self.selecting = false;
-                if let Some((sc, sr, ec, er)) = self.selection {
-                    if sc == ec && sr == er {
-                        self.selection = None;
-                    }
-                }
             }
         }
 
