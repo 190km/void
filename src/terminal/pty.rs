@@ -129,6 +129,7 @@ impl PtyHandle {
         let ctx_clone_wait = ctx.clone();
 
         let event_thread = thread::spawn(move || {
+            let mut last_repaint = Instant::now();
             while let Ok(event) = event_rx.recv() {
                 match event {
                     Event::PtyWrite(text) => {
@@ -167,7 +168,11 @@ impl PtyHandle {
                     | Event::TextAreaSizeRequest(_) => {}
                 }
 
-                ctx_clone_events.request_repaint();
+                // Throttle repaints to ~60fps to avoid excessive redraws during heavy output
+                if last_repaint.elapsed() >= Duration::from_millis(16) {
+                    ctx_clone_events.request_repaint();
+                    last_repaint = Instant::now();
+                }
                 if !alive_clone_events.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -177,6 +182,7 @@ impl PtyHandle {
         let reader_thread = thread::spawn(move || {
             let mut processor: Processor = Processor::new();
             let mut buf = [0u8; 4096];
+            let mut last_repaint = Instant::now();
 
             loop {
                 match reader.read(&mut buf) {
@@ -193,7 +199,11 @@ impl PtyHandle {
                             *last_output = Instant::now();
                         }
 
-                        ctx_clone.request_repaint();
+                        // Throttle repaints to ~60fps to avoid excessive redraws during heavy output
+                        if last_repaint.elapsed() >= Duration::from_millis(16) {
+                            ctx_clone.request_repaint();
+                            last_repaint = Instant::now();
+                        }
                     }
                     Err(e) => {
                         log::debug!("PTY read error: {e}");
@@ -203,6 +213,7 @@ impl PtyHandle {
             }
 
             alive_clone.store(false, Ordering::Relaxed);
+            // Always request a final repaint to ensure the last frame is rendered
             ctx_clone.request_repaint();
         });
 
