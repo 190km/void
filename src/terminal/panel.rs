@@ -565,13 +565,23 @@ impl TerminalPanel {
         };
 
         let close_center = Pos2::new(pr.max.x - 14.0, dot_y);
-        let close_rect = Rect::from_center_size(close_center, Vec2::splat(16.0));
+        let close_rect = Rect::from_center_size(close_center, Vec2::splat(24.0));
         let close_resp = ui.interact(
             close_rect,
             egui::Id::new(self.id).with("close"),
             egui::Sense::click(),
         );
-        if close_resp.clicked() {
+        // Also detect close via raw pointer — canvas transform can cause
+        // egui's interact() to miss clicks on small targets
+        let screen_close_center = transform * close_center;
+        let screen_close =
+            Rect::from_center_size(screen_close_center, Vec2::splat(24.0 * transform.scaling));
+        let close_hovered = close_resp.hovered()
+            || ui
+                .input(|i| i.pointer.hover_pos())
+                .map(|p| screen_close.contains(p))
+                .unwrap_or(false);
+        if close_resp.clicked() || (close_hovered && ui.input(|i| i.pointer.primary_released())) {
             ix.action = Some(PanelAction::Close);
         }
 
@@ -904,19 +914,19 @@ impl TerminalPanel {
                     );
                 }
             }
-            // Close button
+            // Close button — red circle + white X on hover
             {
                 let sc = snap(transform * close_center);
-                let (cc, cs) = if close_resp.hovered() {
+                let (cc, cs) = if close_hovered {
                     cp.circle_filled(
                         sc,
-                        (8.0 * zoom).round().max(1.0),
-                        Color32::from_rgb(200, 60, 60),
+                        (10.0 * zoom).round().max(2.0),
+                        Color32::from_rgb(220, 50, 50),
                     );
-                    (Color32::WHITE, (3.5 * zoom).round().max(1.0))
+                    (Color32::WHITE, (4.0 * zoom).round().max(1.0))
                 } else {
                     (
-                        Color32::from_rgb(100, 100, 100),
+                        Color32::from_rgb(120, 120, 120),
                         (3.0 * zoom).round().max(1.0),
                     )
                 };
@@ -1211,8 +1221,10 @@ impl TerminalPanel {
             self.drag_virtual_pos = None;
         }
 
-        // Cursor icons — resize overrides body I-beam
-        if brr_resp.hovered() || brr_resp.dragged_by(egui::PointerButton::Primary) {
+        // Cursor icons — close button → pointer, resize overrides body I-beam
+        if close_hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        } else if brr_resp.hovered() || brr_resp.dragged_by(egui::PointerButton::Primary) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
         } else if blr_resp.hovered() || blr_resp.dragged_by(egui::PointerButton::Primary) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNeSw);
