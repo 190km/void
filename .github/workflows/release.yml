@@ -2,6 +2,13 @@ name: Release
 run-name: "${{ inputs.version && format('release: v{0}', inputs.version) || 'Release' }}"
 
 on:
+  # Auto-release when canary is merged into main
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'src/**'
+  # Manual trigger still available
   workflow_dispatch:
     inputs:
       version:
@@ -27,6 +34,7 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
+      skip: ${{ steps.meta.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,10 +54,19 @@ jobs:
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "Resolved version: $VERSION"
 
+          # Check if this tag already has a release — skip if so
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v$VERSION already exists — skipping release"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # ── Windows x64 (NSIS installer) ───────────────────────────────
   build-windows:
     name: Windows x64
     needs: preflight
+    if: needs.preflight.outputs.skip != 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -85,6 +102,7 @@ jobs:
   build-macos-arm64:
     name: macOS Apple Silicon
     needs: preflight
+    if: needs.preflight.outputs.skip != 'true'
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -138,6 +156,7 @@ jobs:
   build-macos-x64:
     name: macOS Intel
     needs: preflight
+    if: needs.preflight.outputs.skip != 'true'
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -191,6 +210,7 @@ jobs:
   build-linux:
     name: Linux x64
     needs: preflight
+    if: needs.preflight.outputs.skip != 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
@@ -272,6 +292,7 @@ jobs:
       - build-linux
     if: >-
       always() &&
+      needs.preflight.outputs.skip != 'true' &&
       needs.preflight.result == 'success' &&
       (needs.build-windows.result == 'success' ||
        needs.build-macos-arm64.result == 'success' ||
