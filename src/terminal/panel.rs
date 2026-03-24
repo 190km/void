@@ -976,18 +976,44 @@ impl TerminalPanel {
         }
 
         // Body: click + drag (for selection or mouse forwarding) + focus
+        //
+        // Use BOTH egui's interact() AND raw pointer tracking. The interact()
+        // provides hover/cursor and context menu support. Raw pointer tracking
+        // ensures selection works reliably regardless of canvas transform issues.
         let body_resp = ui.interact(
             content_rect,
             egui::Id::new(self.id).with("body"),
             egui::Sense::click_and_drag(),
         );
 
-        if body_resp.clicked_by(egui::PointerButton::Primary) {
-            ix.clicked = true;
+        // Raw pointer tracking for selection — works in screen space,
+        // bypasses potential transform/layer interaction priority bugs.
+        let screen_content = Rect::from_min_max(
+            transform * content_rect.min,
+            transform * content_rect.max,
+        );
+        let pointer = ui.input(|i| {
+            (
+                i.pointer.hover_pos(),
+                i.pointer.primary_pressed(),
+                i.pointer.primary_released(),
+                i.pointer.primary_down(),
+                i.time,
+            )
+        });
+        let (hover_pos, primary_pressed, primary_released, primary_down, now) = pointer;
+        let pointer_in_body = hover_pos
+            .map(|p| screen_content.contains(p))
+            .unwrap_or(false);
+        // Convert screen pointer to canvas space for cell calculations
+        let canvas_pointer = hover_pos.map(|p| transform.inverse() * p);
 
-            if local_interactions_enabled {
+        if local_interactions_enabled {
+            // Click detection — primary pressed inside body
+            if primary_pressed && pointer_in_body {
+                ix.clicked = true;
+
                 // Track click count for double/triple click
-                let now = ui.input(|i| i.time);
                 if now - self.last_click_time < 0.4 {
                     self.click_count = (self.click_count + 1).min(3);
                 } else {
@@ -995,70 +1021,61 @@ impl TerminalPanel {
                 }
                 self.last_click_time = now;
 
-                match self.click_count {
-                    2 => {
-                        // Double-click: select word
-                        if let Some(pos) = body_resp.interact_pointer_pos() {
-                            let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                if let Some(pos) = canvas_pointer {
+                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+
+                    match self.click_count {
+                        2 => {
+                            // Double-click: select word
                             if let Some((start, end)) = self.word_boundaries_at(col, row) {
                                 self.selection = Some((start, row, end, row));
                                 self.selection_display_offset =
                                     scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                             }
                         }
-                    }
-                    3 => {
-                        // Triple-click: select entire line
-                        if let Some(pos) = body_resp.interact_pointer_pos() {
-                            let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                        3 => {
+                            // Triple-click: select entire line
                             let last_col = (self.last_cols as usize).saturating_sub(1);
                             self.selection = Some((0, row, last_col, row));
                             self.selection_display_offset =
                                 scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                         }
+                        _ => {
+                            // Single click: start selection at this point
+                            self.selection = Some((col, row, col, row));
+                            self.selection_display_offset =
+                                scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
+                            self.selecting = true;
+                        }
                     }
-                    _ => {
+                }
+            }
+
+            // Drag to extend selection
+            if self.selecting && primary_down && !primary_pressed {
+                if let Some(pos) = canvas_pointer {
+                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                    if let Some(ref mut sel) = self.selection {
+                        sel.2 = col;
+                        sel.3 = row;
+                    }
+                }
+            }
+
+            // Release: stop selecting. If start == end, clear selection (was just a click).
+            if primary_released && self.selecting {
+                self.selecting = false;
+                if let Some((sc, sr, ec, er)) = self.selection {
+                    if sc == ec && sr == er {
                         self.selection = None;
                     }
                 }
             }
         }
 
-        // Text selection via drag
-        if local_interactions_enabled && body_resp.drag_started_by(egui::PointerButton::Primary) {
-            ix.clicked = true;
-            if let Some(pos) = body_resp.interact_pointer_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                self.selection = Some((col, row, col, row));
-                self.selection_display_offset =
-                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
-                self.selecting = true;
-            }
-        }
-        if local_interactions_enabled
-            && self.selecting
-            && body_resp.dragged_by(egui::PointerButton::Primary)
-        {
-            if let Some(pos) = body_resp.hover_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                if let Some(ref mut sel) = self.selection {
-                    sel.2 = col;
-                    sel.3 = row;
-                }
-            } else if let Some(pos) = body_resp.interact_pointer_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                if let Some(ref mut sel) = self.selection {
-                    sel.2 = col;
-                    sel.3 = row;
-                }
-            }
-        }
-        if local_interactions_enabled && body_resp.drag_stopped() {
-            self.selecting = false;
-        }
-
         // Mouse forwarding to PTY in mouse mode (for TUI apps: htop, lazygit, vim, etc.)
-        if !local_interactions_enabled {
+        // Uses raw pointer events for reliable detection regardless of canvas transform.
+        if !local_interactions_enabled && pointer_in_body {
             if let Some(pty) = &self.pty {
                 let mods = ui.input(|i| i.modifiers);
                 let mod_bits: u8 = if mods.shift { 4 } else { 0 }
@@ -1072,45 +1089,42 @@ impl TerminalPanel {
                     pty.write(seq.as_bytes());
                 };
 
-                // Left click press
-                if body_resp.clicked_by(egui::PointerButton::Primary)
-                    || body_resp.drag_started_by(egui::PointerButton::Primary)
-                {
-                    ix.clicked = true;
-                    if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                if let Some(pos) = canvas_pointer {
+                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+
+                    // Left click press
+                    if primary_pressed {
+                        ix.clicked = true;
                         send_mouse(0, col, row, true);
                     }
+                    // Mouse drag (motion with button held)
+                    if primary_down && !primary_pressed {
+                        send_mouse(32, col, row, true);
+                    }
+                    // Click release
+                    if primary_released {
+                        send_mouse(0, col, row, false);
+                    }
                 }
+
                 // Middle click
-                if body_resp.clicked_by(egui::PointerButton::Middle) {
-                    ix.clicked = true;
-                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                let middle_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Middle));
+                if middle_pressed {
+                    if let Some(pos) = canvas_pointer {
+                        ix.clicked = true;
                         let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                         send_mouse(1, col, row, true);
                         send_mouse(1, col, row, false);
                     }
                 }
+
                 // Right click
-                if body_resp.clicked_by(egui::PointerButton::Secondary) {
-                    if let Some(pos) = body_resp.interact_pointer_pos() {
+                let secondary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+                if secondary_pressed {
+                    if let Some(pos) = canvas_pointer {
                         let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                         send_mouse(2, col, row, true);
                         send_mouse(2, col, row, false);
-                    }
-                }
-                // Mouse drag (motion with button held)
-                if body_resp.dragged_by(egui::PointerButton::Primary) {
-                    if let Some(pos) = body_resp.hover_pos().or(body_resp.interact_pointer_pos()) {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                        send_mouse(32, col, row, true);
-                    }
-                }
-                // Click release
-                if body_resp.drag_stopped() {
-                    if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                        send_mouse(0, col, row, false);
                     }
                 }
             }
