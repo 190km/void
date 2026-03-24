@@ -168,9 +168,9 @@ impl Workspace {
         y_edges.push(bbox_min_y);
 
         // Deduplicate (within 1px tolerance)
-        x_edges.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        x_edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         x_edges.dedup_by(|a, b| (*a - *b).abs() < 1.0);
-        y_edges.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        y_edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         y_edges.dedup_by(|a, b| (*a - *b).abs() < 1.0);
 
         // Test every (x, y) candidate and score it
