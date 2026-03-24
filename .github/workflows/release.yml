@@ -41,19 +41,55 @@ jobs:
           echo "Version: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Generate changelog from commits
+        id: changelog
+        shell: bash
+        run: |
+          VERSION="v${{ steps.get-version.outputs.version }}"
+          # Find the previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s" --no-merges -50)
+          else
+            COMMITS=$(git log --pretty=format:"- %s" --no-merges "${PREV_TAG}..HEAD")
+          fi
+          # Group by prefix
+          FEATS=$(echo "$COMMITS" | grep -i "^- feat" || true)
+          FIXES=$(echo "$COMMITS" | grep -i "^- fix" || true)
+          REFACTORS=$(echo "$COMMITS" | grep -i "^- refactor" || true)
+          OTHERS=$(echo "$COMMITS" | grep -iv "^- feat\|^- fix\|^- refactor\|^- style\|^- chore\|^- ci\|^- docs" || true)
+          CHORES=$(echo "$COMMITS" | grep -i "^- chore\|^- ci\|^- style\|^- docs" || true)
+
+          BODY=""
+          [ -n "$FEATS" ] && BODY="${BODY}## Features\n${FEATS}\n\n"
+          [ -n "$FIXES" ] && BODY="${BODY}## Fixes\n${FIXES}\n\n"
+          [ -n "$REFACTORS" ] && BODY="${BODY}## Refactors\n${REFACTORS}\n\n"
+          [ -n "$OTHERS" ] && BODY="${BODY}## Other\n${OTHERS}\n\n"
+          [ -n "$CHORES" ] && BODY="${BODY}## Maintenance\n${CHORES}\n\n"
+
+          if [ -n "$PREV_TAG" ]; then
+            BODY="${BODY}**Full Changelog**: ${PREV_TAG}...${VERSION}"
+          fi
+
+          # Write to file to preserve newlines
+          echo -e "$BODY" > /tmp/changelog.md
+          echo "Generated changelog for ${VERSION}"
+
       - name: Create Draft Release
         id: create-release
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/changelog.md', 'utf8');
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: `v${{ steps.get-version.outputs.version }}`,
               name: `v${{ steps.get-version.outputs.version }}`,
+              body: body,
               draft: true,
-              prerelease: false,
-              generate_release_notes: true
+              prerelease: false
             })
             return data.id
 
