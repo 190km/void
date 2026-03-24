@@ -429,8 +429,9 @@ impl eframe::App for VoidApp {
             }
         }
 
-        // --- Sidebar ---
-        if self.sidebar_visible {
+        // --- Sidebar (hidden in fullscreen) ---
+        let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        if self.sidebar_visible && !is_fullscreen {
             egui::SidePanel::left("sidebar")
                 .exact_width(SIDEBAR_WIDTH)
                 .frame(
@@ -800,7 +801,7 @@ impl eframe::App for VoidApp {
         // --- Minimap overlay ---
         // Drawn in a small foreground area covering only the minimap rect,
         // so it doesn't block terminal interactions.
-        if self.show_minimap {
+        if self.show_minimap && !is_fullscreen {
             let mm_w = 220.0;
             let mm_h = 170.0;
             let mm_pos = Pos2::new(canvas_rect.max.x - mm_w, canvas_rect.max.y - mm_h);

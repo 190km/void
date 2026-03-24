@@ -1203,6 +1203,10 @@ impl TerminalPanel {
         if title_resp.clicked_by(egui::PointerButton::Primary) {
             ix.clicked = true;
         }
+        // Middle-click on title bar to close panel
+        if title_resp.clicked_by(egui::PointerButton::Middle) {
+            ix.action = Some(PanelAction::Close);
+        }
         if title_resp.dragged_by(egui::PointerButton::Primary) {
             ix.dragging_title = true;
             ix.drag_delta = title_resp.drag_delta();
