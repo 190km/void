@@ -32,12 +32,32 @@ fn main() -> Result<()> {
         }
     };
 
+    // Restore window state from saved layout
+    let saved_state = state::persistence::load_state();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(format!("Void | v{}", env!("CARGO_PKG_VERSION")))
+        .with_inner_size([1024.0, 640.0])
+        .with_min_inner_size([640.0, 400.0])
+        .with_icon(Arc::new(icon));
+
+    if let Some(ref saved) = saved_state {
+        if let Some([w, h]) = saved.window_size {
+            if w >= 640.0 && h >= 400.0 {
+                viewport = viewport.with_inner_size([w, h]);
+            }
+        }
+        if let Some([x, y]) = saved.window_pos {
+            if x >= 0.0 && y >= 0.0 {
+                viewport = viewport.with_position([x, y]);
+            }
+        }
+        if saved.window_maximized {
+            viewport = viewport.with_maximized(true);
+        }
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(format!("Void | v{}", env!("CARGO_PKG_VERSION")))
-            .with_inner_size([1024.0, 640.0])
-            .with_min_inner_size([640.0, 400.0])
-            .with_icon(Arc::new(icon)),
+        viewport,
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };

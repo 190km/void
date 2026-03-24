@@ -11,6 +11,15 @@ pub struct AppState {
     pub sidebar_visible: bool,
     pub show_grid: bool,
     pub show_minimap: bool,
+    /// Window position [x, y] in screen coordinates.
+    #[serde(default)]
+    pub window_pos: Option<[f32; 2]>,
+    /// Window size [width, height].
+    #[serde(default)]
+    pub window_size: Option<[f32; 2]>,
+    /// Whether the window was maximized.
+    #[serde(default)]
+    pub window_maximized: bool,
 }
 
 /// Serializable snapshot of a single workspace.

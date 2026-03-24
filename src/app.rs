@@ -320,12 +320,26 @@ impl VoidApp {
                 saved
             })
             .collect();
+        let (window_pos, window_size, window_maximized) = if let Some(ctx) = &self.ctx {
+            ctx.input(|i| {
+                let vp = i.viewport();
+                let pos = vp.outer_rect.map(|r| [r.min.x, r.min.y]);
+                let size = vp.outer_rect.map(|r| [r.width(), r.height()]);
+                let maximized = vp.maximized.unwrap_or(false);
+                (pos, size, maximized)
+            })
+        } else {
+            (None, None, false)
+        };
         crate::state::persistence::AppState {
             workspaces,
             active_ws: self.active_ws,
             sidebar_visible: self.sidebar_visible,
             show_grid: self.show_grid,
             show_minimap: self.show_minimap,
+            window_pos,
+            window_size,
+            window_maximized,
         }
     }
 }
