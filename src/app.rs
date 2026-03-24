@@ -39,6 +39,7 @@ pub struct VoidApp {
     sidebar: Sidebar,
     update_checker: UpdateChecker,
     bus: Arc<Mutex<TerminalBus>>,
+    bus_port: u16,
 }
 
 impl VoidApp {
@@ -60,6 +61,8 @@ impl VoidApp {
         };
 
         let bus = Arc::new(Mutex::new(TerminalBus::new()));
+        let bus_port = crate::bus::server::start_bus_server(bus.clone());
+        std::env::set_var("VOID_BUS_PORT", bus_port.to_string());
 
         // Try to restore saved layout, otherwise create a default workspace
         let (workspaces, active_ws, sidebar_visible, show_grid, show_minimap, viewport) =
@@ -115,6 +118,7 @@ impl VoidApp {
             sidebar: Sidebar::default(),
             update_checker: UpdateChecker::new(cc.egui_ctx.clone()),
             bus,
+            bus_port,
         }
     }
 

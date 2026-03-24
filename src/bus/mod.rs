@@ -1,6 +1,7 @@
 // src/bus/mod.rs
 
 pub mod apc;
+pub mod server;
 pub mod types;
 
 use std::collections::HashMap;

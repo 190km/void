@@ -103,6 +103,10 @@ impl PtyHandle {
         cmd.env("COLORTERM", "truecolor");
         cmd.env("VOID_TERMINAL", "1");
         cmd.env("VOID_TERMINAL_ID", terminal_id.to_string());
+        // VOID_BUS_PORT is set in the process env by VoidApp::new()
+        if let Ok(port) = std::env::var("VOID_BUS_PORT") {
+            cmd.env("VOID_BUS_PORT", port);
+        }
         if let Some(dir) = cwd {
             cmd.cwd(dir);
         }

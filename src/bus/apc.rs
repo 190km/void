@@ -147,7 +147,7 @@ fn format_apc_response(json: &Value) -> Vec<u8> {
 }
 
 /// Route a JSON-RPC method to the appropriate bus operation.
-fn dispatch_bus_method(
+pub fn dispatch_bus_method(
     method: &str,
     params: &Value,
     caller_terminal: Option<Uuid>,
