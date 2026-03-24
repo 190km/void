@@ -226,6 +226,20 @@ impl PtyHandle {
             }
 
             alive_clone.store(false, Ordering::Relaxed);
+
+            // Feed a terminal reset sequence so alacritty_terminal clears
+            // ALT_SCREEN, MOUSE_MODE, etc. Programs killed with Ctrl+C
+            // don't send cleanup escapes, leaving stale mode flags.
+            if let Ok(mut term) = term_clone.lock() {
+                // \x1b[?1049l = exit alt screen
+                // \x1b[?1003l = disable any-event mouse tracking
+                // \x1b[?1006l = disable SGR mouse mode
+                // \x1b[?1l    = reset cursor keys to normal mode
+                // \x1b[?2004l = disable bracketed paste
+                let reset = b"\x1b[?1049l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b[?2004l";
+                processor.advance(&mut *term, reset);
+            }
+
             // Always request a final repaint to ensure the last frame is rendered
             ctx_clone.request_repaint();
         });

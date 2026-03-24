@@ -561,7 +561,8 @@ impl TerminalPanel {
 
                 local_interactions_enabled = !term
                     .mode()
-                    .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE);
+                    .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE)
+                    || !pty.is_alive();
                 crate::terminal::renderer::render_terminal(
                     ui.ctx(),
                     painter,
@@ -979,39 +980,41 @@ impl TerminalPanel {
         if body_resp.clicked_by(egui::PointerButton::Primary) {
             ix.clicked = true;
 
-            // Track click count for double/triple click
-            let now = ui.input(|i| i.time);
-            if now - self.last_click_time < 0.4 {
-                self.click_count = (self.click_count + 1).min(3);
-            } else {
-                self.click_count = 1;
-            }
-            self.last_click_time = now;
+            if local_interactions_enabled {
+                // Track click count for double/triple click
+                let now = ui.input(|i| i.time);
+                if now - self.last_click_time < 0.4 {
+                    self.click_count = (self.click_count + 1).min(3);
+                } else {
+                    self.click_count = 1;
+                }
+                self.last_click_time = now;
 
-            match self.click_count {
-                2 => {
-                    // Double-click: select word
-                    if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                        if let Some((start, end)) = self.word_boundaries_at(col, row) {
-                            self.selection = Some((start, row, end, row));
+                match self.click_count {
+                    2 => {
+                        // Double-click: select word
+                        if let Some(pos) = body_resp.interact_pointer_pos() {
+                            let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                            if let Some((start, end)) = self.word_boundaries_at(col, row) {
+                                self.selection = Some((start, row, end, row));
+                                self.selection_display_offset =
+                                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
+                            }
+                        }
+                    }
+                    3 => {
+                        // Triple-click: select entire line
+                        if let Some(pos) = body_resp.interact_pointer_pos() {
+                            let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                            let last_col = (self.last_cols as usize).saturating_sub(1);
+                            self.selection = Some((0, row, last_col, row));
                             self.selection_display_offset =
                                 scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                         }
                     }
-                }
-                3 => {
-                    // Triple-click: select entire line
-                    if let Some(pos) = body_resp.interact_pointer_pos() {
-                        let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                        let last_col = (self.last_cols as usize).saturating_sub(1);
-                        self.selection = Some((0, row, last_col, row));
-                        self.selection_display_offset =
-                            scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
+                    _ => {
+                        self.selection = None;
                     }
-                }
-                _ => {
-                    self.selection = None;
                 }
             }
         }

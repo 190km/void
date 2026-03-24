@@ -195,15 +195,52 @@ impl Workspace {
                 let bbox_growth = (new_max_x - new_min_x) * (new_max_y - new_min_y)
                     - (bbox_max_x - bbox_min_x) * (bbox_max_y - bbox_min_y);
 
+                // Count how many existing panels this candidate is adjacent to.
+                // Adjacency = sharing an aligned edge with ~gap distance.
+                // More adjacency = better gap-filling (L-shapes, completing rows).
+                let tolerance = gap * 1.5;
+                let mut adjacency: f32 = 0.0;
+                for r in &rects {
+                    // Right edge of existing → left edge of candidate
+                    if (candidate_rect.min.x - r.max.x - gap).abs() < tolerance
+                        && candidate_rect.max.y > r.min.y
+                        && candidate_rect.min.y < r.max.y
+                    {
+                        adjacency += 1.0;
+                    }
+                    // Left edge of existing → right edge of candidate
+                    if (r.min.x - candidate_rect.max.x - gap).abs() < tolerance
+                        && candidate_rect.max.y > r.min.y
+                        && candidate_rect.min.y < r.max.y
+                    {
+                        adjacency += 1.0;
+                    }
+                    // Bottom edge of existing → top edge of candidate
+                    if (candidate_rect.min.y - r.max.y - gap).abs() < tolerance
+                        && candidate_rect.max.x > r.min.x
+                        && candidate_rect.min.x < r.max.x
+                    {
+                        adjacency += 1.0;
+                    }
+                    // Top edge of existing → bottom edge of candidate
+                    if (r.min.y - candidate_rect.max.y - gap).abs() < tolerance
+                        && candidate_rect.max.x > r.min.x
+                        && candidate_rect.min.x < r.max.x
+                    {
+                        adjacency += 1.0;
+                    }
+                }
+
                 // Distance from center of existing layout
                 let candidate_center = candidate_rect.center();
                 let dist = ((candidate_center.x - bbox_center.x).powi(2)
                     + (candidate_center.y - bbox_center.y).powi(2))
                 .sqrt();
 
-                // Combined score: heavily weight bbox growth (fills gaps),
-                // then use distance as tiebreaker
-                let score = bbox_growth * 2.0 + dist;
+                // Combined score: adjacency bonus (more touching = better),
+                // then bbox growth (smaller = better), then distance as tiebreaker.
+                // Adjacency is weighted heavily to prefer gap-filling.
+                let score = -adjacency * 100_000.0 + bbox_growth * 2.0 + dist;
 
                 if best.is_none() || score < best.unwrap().1 {
                     best = Some((candidate, score));
