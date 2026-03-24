@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod bus;
 mod canvas;
 mod command_palette;
 mod panel;
