@@ -1,5 +1,5 @@
 name: Release
-run-name: "release: v${{ inputs.version || '(auto from Cargo.toml)' }}"
+run-name: "${{ inputs.version && format('release: v{0}', inputs.version) || 'Release' }}"
 
 on:
   workflow_dispatch:
