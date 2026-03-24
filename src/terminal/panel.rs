@@ -97,6 +97,10 @@ pub struct TerminalPanel {
     /// so accumulated movement can escape snap zones naturally.
     pub resize_virtual_rect: Option<Rect>,
     bell_flash_until: f64,
+    /// When set, reset terminal modes (ALT_SCREEN, MOUSE_MODE) after this time.
+    /// Triggered when Ctrl+C is sent while in ALT_SCREEN — the TUI app is likely
+    /// being killed and won't send cleanup escape sequences.
+    pending_mode_reset: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,10 +221,37 @@ impl TerminalPanel {
             drag_virtual_pos: None,
             resize_virtual_rect: None,
             bell_flash_until: 0.0,
+            pending_mode_reset: None,
         }
     }
 
-
+    #[allow(dead_code)]
+    pub fn new(title: impl Into<String>, position: Pos2, size: Vec2, color: Color32) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            title: title.into(),
+            position,
+            size,
+            color,
+            z_index: 0,
+            focused: false,
+            pty: None,
+            last_cols: 80,
+            last_rows: 24,
+            spawn_error: None,
+            selection: None,
+            selection_display_offset: 0,
+            selecting: false,
+            scroll_remainder: 0.0,
+            scrollbar_grab_offset: None,
+            last_click_time: 0.0,
+            click_count: 0,
+            drag_virtual_pos: None,
+            resize_virtual_rect: None,
+            bell_flash_until: 0.0,
+            pending_mode_reset: None,
+        }
+    }
 
     /// Create a panel from saved state, spawning a new terminal process.
     pub fn from_saved(
@@ -396,12 +427,35 @@ impl TerminalPanel {
             }
             if !input.bytes.is_empty() {
                 // Any keyboard input snaps scroll back to bottom (standard terminal behavior)
-                if let Ok(mut term) = pty.term.lock() {
+                let has_stale_modes = if let Ok(mut term) = pty.term.lock() {
                     let offset = term.grid().display_offset();
                     if offset != 0 {
                         term.scroll_display(alacritty_terminal::grid::Scroll::Bottom);
                     }
+                    term.mode()
+                        .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE)
+                } else {
+                    false
+                };
+
+                // If the terminal has ALT_SCREEN or MOUSE_MODE set and the
+                // user sends keyboard input, schedule a mode reset.
+                // This catches ALL exit methods from TUI apps:
+                // - Ctrl+C (SIGINT), normal quit, Escape, etc.
+                // The 500ms delay lets the TUI app respond — if it's still
+                // running it will keep its modes active.
+                if has_stale_modes {
+                    // Only trigger if there's been no PTY output recently
+                    // (TUI apps constantly output; a quiet terminal = app exited)
+                    let output_stale =
+                        pty.time_since_last_output() > std::time::Duration::from_millis(500);
+
+                    if output_stale || input.bytes.contains(&0x03) {
+                        let now = ctx.input(|i| i.time);
+                        self.pending_mode_reset = Some(now + 0.5);
+                    }
                 }
+
                 pty.write(&input.bytes);
                 self.selection = None;
             }
@@ -556,6 +610,37 @@ impl TerminalPanel {
             .is_some_and(|pty| pty.should_hide_cursor_for_streaming_output());
 
         if let Some(pty) = &self.pty {
+            // Check pending mode reset: if Ctrl+C was sent while in ALT_SCREEN
+            // and the timer has expired, feed reset sequences to the VTE parser.
+            // This cleans up stale ALT_SCREEN/MOUSE_MODE from killed TUI apps.
+            if let Some(reset_at) = self.pending_mode_reset {
+                let now = ui.input(|i| i.time);
+                if now >= reset_at {
+                    self.pending_mode_reset = None;
+                    if let Ok(mut term) = pty.term.lock() {
+                        if term
+                            .mode()
+                            .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE)
+                        {
+                            let mut processor: alacritty_terminal::vte::ansi::Processor =
+                                alacritty_terminal::vte::ansi::Processor::new();
+                            // Clear ALL stale modes:
+                            // 1049  = exit alt screen
+                            // 1000  = disable click mouse tracking
+                            // 1002  = disable button-event mouse tracking
+                            // 1003  = disable any-event mouse tracking
+                            // 1006  = disable SGR mouse encoding
+                            // 1    = reset cursor keys
+                            // 2004  = disable bracketed paste
+                            processor.advance(
+                                &mut *term,
+                                b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b[?2004l",
+                            );
+                        }
+                    }
+                }
+            }
+
             if let Ok(term) = pty.term.lock() {
                 use alacritty_terminal::grid::Dimensions;
 

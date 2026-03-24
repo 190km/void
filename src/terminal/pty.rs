@@ -129,7 +129,6 @@ impl PtyHandle {
         let ctx_clone_wait = ctx.clone();
 
         let event_thread = thread::spawn(move || {
-            let mut last_repaint = Instant::now();
             while let Ok(event) = event_rx.recv() {
                 match event {
                     Event::PtyWrite(text) => {
@@ -160,32 +159,15 @@ impl PtyHandle {
                             let _ = clipboard.set_text(data);
                         }
                     }
-                    Event::ClipboardLoad(_clipboard_type, formatter) => {
-                        // OSC 52 query: program wants to read clipboard contents
-                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                            if let Ok(text) = clipboard.get_text() {
-                                let response = formatter(&text);
-                                if let Ok(mut w) = writer_clone.lock() {
-                                    let _ = w.write_all(response.as_bytes());
-                                    let _ = w.flush();
-                                }
-                            }
-                        }
-                    }
-                    Event::ColorRequest(index, _) => {
-                        log::debug!("Unhandled ColorRequest for index {}", index);
-                    }
                     Event::Wakeup
                     | Event::MouseCursorDirty
                     | Event::CursorBlinkingChange
+                    | Event::ClipboardLoad(_, _)
+                    | Event::ColorRequest(_, _)
                     | Event::TextAreaSizeRequest(_) => {}
                 }
 
-                // Throttle repaints to ~60fps to avoid excessive redraws during heavy output
-                if last_repaint.elapsed() >= Duration::from_millis(16) {
-                    ctx_clone_events.request_repaint();
-                    last_repaint = Instant::now();
-                }
+                ctx_clone_events.request_repaint();
                 if !alive_clone_events.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -195,7 +177,6 @@ impl PtyHandle {
         let reader_thread = thread::spawn(move || {
             let mut processor: Processor = Processor::new();
             let mut buf = [0u8; 4096];
-            let mut last_repaint = Instant::now();
 
             loop {
                 match reader.read(&mut buf) {
@@ -212,11 +193,7 @@ impl PtyHandle {
                             *last_output = Instant::now();
                         }
 
-                        // Throttle repaints to ~60fps to avoid excessive redraws during heavy output
-                        if last_repaint.elapsed() >= Duration::from_millis(16) {
-                            ctx_clone.request_repaint();
-                            last_repaint = Instant::now();
-                        }
+                        ctx_clone.request_repaint();
                     }
                     Err(e) => {
                         log::debug!("PTY read error: {e}");
@@ -226,7 +203,6 @@ impl PtyHandle {
             }
 
             alive_clone.store(false, Ordering::Relaxed);
-            // Always request a final repaint to ensure the last frame is rendered
             ctx_clone.request_repaint();
         });
 
@@ -286,17 +262,18 @@ impl PtyHandle {
         self.alive.load(Ordering::Relaxed)
     }
 
+    /// How long since the last PTY output.
+    pub fn time_since_last_output(&self) -> Duration {
+        self.last_output_at
+            .lock()
+            .map(|t| t.elapsed())
+            .unwrap_or(Duration::from_secs(999))
+    }
+
     pub fn should_hide_cursor_for_streaming_output(&self) -> bool {
-        const CURSOR_HIDE_AFTER_OUTPUT: Duration = Duration::from_millis(220);
-
-        let Ok(last_output) = self.last_output_at.lock() else {
-            return false;
-        };
-        let Ok(last_input) = self.last_input_at.lock() else {
-            return false;
-        };
-
-        *last_output > *last_input && last_output.elapsed() < CURSOR_HIDE_AFTER_OUTPUT
+        // Cursor is always visible — hiding it during output caused
+        // the cursor to flicker/disappear while the user was typing.
+        false
     }
 }
 
