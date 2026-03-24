@@ -1,6 +1,13 @@
 name: Release
+run-name: "release: v${{ inputs.version || '(auto from Cargo.toml)' }}"
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version override (leave empty to use Cargo.toml)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -22,12 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get version from Cargo.toml
+      - name: Get version
         id: get-version
         shell: bash
         run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          echo "Application version from Cargo.toml: $VERSION"
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          fi
+          echo "Version: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create Draft Release
