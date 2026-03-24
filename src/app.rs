@@ -83,7 +83,7 @@ impl VoidApp {
                     vec![ws],
                     0,
                     true,
-                    false,
+                    true,
                     true,
                     Viewport {
                         pan: Vec2::new(100.0, 50.0),
@@ -534,14 +534,16 @@ impl eframe::App for VoidApp {
                 .map(|(idx, _)| idx)
         });
 
-        if let Some(idx) = hovered_terminal {
-            let scroll_y = ctx.input(|input| input.smooth_scroll_delta.y);
-            if scroll_y != 0.0 {
-                self.ws_mut().panels[idx].handle_scroll(ctx, scroll_y);
-                ctx.input_mut(|input| {
-                    input.smooth_scroll_delta = egui::Vec2::ZERO;
-                    input.raw_scroll_delta = egui::Vec2::ZERO;
-                });
+        if !self.command_palette.open {
+            if let Some(idx) = hovered_terminal {
+                let scroll_y = ctx.input(|input| input.smooth_scroll_delta.y);
+                if scroll_y != 0.0 {
+                    self.ws_mut().panels[idx].handle_scroll(ctx, scroll_y);
+                    ctx.input_mut(|input| {
+                        input.smooth_scroll_delta = egui::Vec2::ZERO;
+                        input.raw_scroll_delta = egui::Vec2::ZERO;
+                    });
+                }
             }
         }
 
@@ -554,15 +556,17 @@ impl eframe::App for VoidApp {
                 ui.set_clip_rect(canvas_rect);
                 let (_, bg_resp) = ui.allocate_exact_size(canvas_rect.size(), egui::Sense::click());
 
-                crate::canvas::scene::handle_canvas_input(
-                    ui,
-                    &mut self.viewport,
-                    canvas_rect,
-                    hovered_terminal.is_some(),
-                );
+                if !self.command_palette.open {
+                    crate::canvas::scene::handle_canvas_input(
+                        ui,
+                        &mut self.viewport,
+                        canvas_rect,
+                        hovered_terminal.is_some(),
+                    );
+                }
 
                 if self.show_grid {
-                    crate::canvas::grid::draw_dot_grid(ui, &self.viewport, canvas_rect);
+                    crate::canvas::grid::draw_grid(ui, &self.viewport, canvas_rect);
                 }
 
                 // Unfocus when clicking empty canvas
@@ -621,7 +625,7 @@ impl eframe::App for VoidApp {
                     {
                         continue;
                     }
-                    let ix = self.ws_mut().panels[idx].show(ui);
+                    let ix = self.ws_mut().panels[idx].show(ui, transform, canvas_rect);
                     if ix.clicked || ix.dragging_title || ix.resizing || ix.action.is_some() {
                         interactions.push((idx, ix));
                     }

@@ -1,6 +1,4 @@
-// Terminal renderer — renders at fixed font size in canvas space.
-// Uses painter_at() to clip text to the panel body (no overflow).
-// GPU TSTransform handles zoom scaling of the rasterized glyphs.
+// Terminal renderer — backgrounds in canvas space, text in screen space for crisp zoom.
 
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::point_to_viewport;
@@ -20,7 +18,6 @@ const CELL_HEIGHT_ESTIMATE: f32 = FONT_SIZE * 1.25;
 const CURSOR_BLINK_ON_SECONDS: f64 = 0.6;
 const CURSOR_BLINK_OFF_SECONDS: f64 = 0.4;
 
-/// Public cell size for mouse coordinate mapping.
 #[allow(dead_code)]
 pub fn cell_size(ctx: &egui::Context) -> (f32, f32) {
     measure_cell(ctx)
@@ -65,7 +62,9 @@ pub fn compute_grid_size_from_ctx(
     (cols as u16, rows as u16)
 }
 
-/// Render terminal in canvas space, clipped to body_rect.
+/// Render terminal content. Backgrounds in canvas space (GPU scales fine),
+/// text + cursor in screen space (crisp at any zoom level).
+#[allow(clippy::too_many_arguments)]
 pub fn render_terminal(
     ctx: &egui::Context,
     painter: &egui::Painter,
@@ -73,25 +72,24 @@ pub fn render_terminal(
     body_rect: Rect,
     focused: bool,
     hide_cursor_for_output: bool,
+    transform: egui::emath::TSTransform,
+    screen_clip: Rect,
+    panel_id: uuid::Uuid,
 ) {
-    let font = FontId::monospace(FONT_SIZE);
     let (cw, ch) = measure_cell(ctx);
     if cw < 1.0 || ch < 1.0 {
         return;
     }
 
-    // Use painter_at to CLIP everything to the body rect — no text overflow
+    let zoom = transform.scaling;
     let clipped = painter.with_clip_rect(body_rect);
-
     let content = term.renderable_content();
     let display_offset = content.display_offset;
     let colors = content.colors;
-
-    // Keep the rendered viewport aligned with the PTY grid sizing.
     let (max_col, max_row) =
         grid_size_for_cell_metrics(body_rect.width(), body_rect.height(), cw, ch);
 
-    // --- Backgrounds ---
+    // --- Backgrounds (canvas space) ---
     let mut run: Option<(Color32, f32, f32, f32)> = None;
     for indexed in content.display_iter {
         let Some(viewport_point) = point_to_viewport(display_offset, indexed.point) else {
@@ -102,10 +100,8 @@ pub fn render_terminal(
         if row >= max_row || col >= max_col {
             continue;
         }
-
         let x = body_rect.min.x + PAD_X + col as f32 * cw;
         let y = body_rect.min.y + PAD_Y + row as f32 * ch;
-
         let cell = &indexed.cell;
         let fl = cell.flags;
         if fl.contains(Flags::WIDE_CHAR_SPACER) {
@@ -124,7 +120,6 @@ pub fn render_terminal(
         } else {
             cw
         };
-
         if bg != DEFAULT_BG {
             if let Some(ref mut r) = run {
                 if r.0 == bg && (r.2 - y).abs() < 0.1 && (r.1 + r.3 - x).abs() < 0.5 {
@@ -154,7 +149,24 @@ pub fn render_terminal(
         );
     }
 
-    // --- Text ---
+    // --- Text (screen space — crisp at any zoom) ---
+    let screen_font_size = FONT_SIZE * zoom;
+    let screen_font = FontId::monospace(screen_font_size);
+    let screen_cw = cw * zoom;
+    let screen_ch = ch * zoom;
+    let screen_pad_x = PAD_X * zoom;
+    let screen_pad_y = PAD_Y * zoom;
+
+    let screen_body = Rect::from_min_max(transform * body_rect.min, transform * body_rect.max)
+        .intersect(screen_clip);
+
+    let text_layer = egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("term_text").with(panel_id),
+    );
+    let text_painter = ctx.layer_painter(text_layer).with_clip_rect(screen_body);
+    let screen_body_min = transform * body_rect.min;
+
     let content2 = term.renderable_content();
     let display_offset = content2.display_offset;
     for indexed in content2.display_iter {
@@ -166,10 +178,6 @@ pub fn render_terminal(
         if row >= max_row || col >= max_col {
             continue;
         }
-
-        let x = body_rect.min.x + PAD_X + col as f32 * cw;
-        let y = body_rect.min.y + PAD_Y + row as f32 * ch;
-
         let cell = &indexed.cell;
         let fl = cell.flags;
         if fl.contains(Flags::WIDE_CHAR_SPACER) {
@@ -179,6 +187,8 @@ pub fn render_terminal(
         if c == ' ' || c == '\0' {
             continue;
         }
+        let sx = screen_body_min.x + screen_pad_x + col as f32 * screen_cw;
+        let sy = screen_body_min.y + screen_pad_y + row as f32 * screen_ch;
 
         let mut fg = if fl.contains(Flags::INVERSE) {
             colors::to_egui_color(cell.bg, colors)
@@ -202,39 +212,33 @@ pub fn render_terminal(
         if fl.contains(Flags::BOLD) && !fl.contains(Flags::DIM) {
             fg = brighten(fg);
         }
-
-        // Italic: faux-italic via slight x-offset on top (skew effect)
         let is_italic = fl.contains(Flags::ITALIC);
-        let text_x = if is_italic { x + 1.5 } else { x };
+        let text_x = if is_italic { sx + 1.5 * zoom } else { sx };
 
-        clipped.text(
-            Pos2::new(text_x, y),
+        text_painter.text(
+            Pos2::new(text_x, sy),
             egui::Align2::LEFT_TOP,
             c.to_string(),
-            font.clone(),
+            screen_font.clone(),
             fg,
         );
-
-        // Underline decoration
         if fl.contains(Flags::UNDERLINE) {
-            let underline_y = y + ch - 1.0;
-            clipped.line_segment(
-                [Pos2::new(x, underline_y), Pos2::new(x + cw, underline_y)],
-                egui::Stroke::new(1.0, fg),
+            let uy = sy + screen_ch - zoom;
+            text_painter.line_segment(
+                [Pos2::new(sx, uy), Pos2::new(sx + screen_cw, uy)],
+                egui::Stroke::new(zoom, fg),
             );
         }
-
-        // Strikethrough decoration
         if fl.contains(Flags::STRIKEOUT) {
-            let strike_y = y + ch * 0.5;
-            clipped.line_segment(
-                [Pos2::new(x, strike_y), Pos2::new(x + cw, strike_y)],
-                egui::Stroke::new(1.0, fg),
+            let sy2 = sy + screen_ch * 0.5;
+            text_painter.line_segment(
+                [Pos2::new(sx, sy2), Pos2::new(sx + screen_cw, sy2)],
+                egui::Stroke::new(zoom, fg),
             );
         }
     }
 
-    // --- Cursor ---
+    // --- Cursor (screen space) ---
     let cursor = content2.cursor;
     let cursor_style = term.cursor_style();
     let draw_cursor = should_draw_cursor(
@@ -258,34 +262,37 @@ pub fn render_terminal(
         let row = cursor_point.line;
         let col = cursor_point.column.0;
         if row < max_row && col < max_col {
-            let cx = body_rect.min.x + PAD_X + col as f32 * cw;
-            let cy = body_rect.min.y + PAD_Y + row as f32 * ch;
-            let cr = Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(cw, ch));
+            let cx = screen_body_min.x + screen_pad_x + col as f32 * screen_cw;
+            let cy = screen_body_min.y + screen_pad_y + row as f32 * screen_ch;
+            let cr = Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(screen_cw, screen_ch));
             let cc = Color32::from_rgb(196, 223, 255);
             match cursor.shape {
                 CursorShape::Block => {
-                    clipped.rect_filled(
+                    text_painter.rect_filled(
                         cr,
                         0.0,
                         Color32::from_rgba_premultiplied(cc.r(), cc.g(), cc.b(), 180),
                     );
                 }
                 CursorShape::Beam => {
-                    clipped.rect_filled(
-                        Rect::from_min_size(cr.left_top(), Vec2::new(2.0, ch)),
+                    text_painter.rect_filled(
+                        Rect::from_min_size(cr.left_top(), Vec2::new(2.0 * zoom, screen_ch)),
                         0.0,
                         cc,
                     );
                 }
                 CursorShape::Underline => {
-                    clipped.rect_filled(
-                        Rect::from_min_size(Pos2::new(cx, cy + ch - 2.0), Vec2::new(cw, 2.0)),
+                    text_painter.rect_filled(
+                        Rect::from_min_size(
+                            Pos2::new(cx, cy + screen_ch - 2.0 * zoom),
+                            Vec2::new(screen_cw, 2.0 * zoom),
+                        ),
                         0.0,
                         cc,
                     );
                 }
                 CursorShape::HollowBlock => {
-                    clipped.rect_stroke(cr, 0.0, egui::Stroke::new(1.0, cc));
+                    text_painter.rect_stroke(cr, 0.0, egui::Stroke::new(zoom, cc));
                 }
                 CursorShape::Hidden => {}
             }
@@ -303,11 +310,9 @@ fn should_draw_cursor(
     if !focused || shape == CursorShape::Hidden || hide_cursor_for_output {
         return false;
     }
-
     if !blinking {
         return true;
     }
-
     blink_phase_visible(time_seconds)
 }
 

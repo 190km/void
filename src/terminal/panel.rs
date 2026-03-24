@@ -496,7 +496,12 @@ impl TerminalPanel {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> PanelInteraction {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        transform: egui::emath::TSTransform,
+        screen_clip: Rect,
+    ) -> PanelInteraction {
         self.check_resize(ui.ctx());
         let mut ix = PanelInteraction::default();
         let pr = self.rect();
@@ -633,6 +638,9 @@ impl TerminalPanel {
                     content_rect,
                     self.focused,
                     hide_cursor_for_output,
+                    transform,
+                    screen_clip,
+                    self.id,
                 );
                 scrollbar_state = Some(ScrollbarState {
                     history_size: term.grid().history_size(),

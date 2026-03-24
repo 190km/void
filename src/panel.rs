@@ -125,9 +125,14 @@ impl CanvasPanel {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> PanelInteraction {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        transform: egui::emath::TSTransform,
+        screen_clip: Rect,
+    ) -> PanelInteraction {
         match self {
-            Self::Terminal(t) => t.show(ui),
+            Self::Terminal(t) => t.show(ui, transform, screen_clip),
         }
     }
 
