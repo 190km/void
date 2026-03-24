@@ -18,7 +18,6 @@ const CELL_HEIGHT_ESTIMATE: f32 = FONT_SIZE * 1.25;
 const CURSOR_BLINK_ON_SECONDS: f64 = 0.6;
 const CURSOR_BLINK_OFF_SECONDS: f64 = 0.4;
 
-#[allow(dead_code)]
 pub fn cell_size(ctx: &egui::Context) -> (f32, f32) {
     measure_cell(ctx)
 }

@@ -9,7 +9,6 @@ use crate::panel::CanvasPanel;
 use crate::terminal::panel::TerminalPanel;
 
 pub struct Workspace {
-    #[allow(dead_code)]
     pub id: Uuid,
     pub name: String,
     pub cwd: Option<PathBuf>,

@@ -220,32 +220,7 @@ impl TerminalPanel {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn new(title: impl Into<String>, position: Pos2, size: Vec2, color: Color32) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            title: title.into(),
-            position,
-            size,
-            color,
-            z_index: 0,
-            focused: false,
-            pty: None,
-            last_cols: 80,
-            last_rows: 24,
-            spawn_error: None,
-            selection: None,
-            selection_display_offset: 0,
-            selecting: false,
-            scroll_remainder: 0.0,
-            scrollbar_grab_offset: None,
-            last_click_time: 0.0,
-            click_count: 0,
-            drag_virtual_pos: None,
-            resize_virtual_rect: None,
-            bell_flash_until: 0.0,
-        }
-    }
+
 
     /// Create a panel from saved state, spawning a new terminal process.
     pub fn from_saved(
