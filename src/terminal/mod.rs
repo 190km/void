@@ -5,4 +5,3 @@ pub mod input;
 pub mod panel;
 pub mod pty;
 pub mod renderer;
-pub mod selection;
