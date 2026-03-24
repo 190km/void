@@ -427,23 +427,24 @@ impl TerminalPanel {
             }
             if !input.bytes.is_empty() {
                 // Any keyboard input snaps scroll back to bottom (standard terminal behavior)
-                let in_alt_screen = if let Ok(mut term) = pty.term.lock() {
+                let has_stale_modes = if let Ok(mut term) = pty.term.lock() {
                     let offset = term.grid().display_offset();
                     if offset != 0 {
                         term.scroll_display(alacritty_terminal::grid::Scroll::Bottom);
                     }
-                    term.mode().contains(TermMode::ALT_SCREEN)
+                    term.mode()
+                        .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE)
                 } else {
                     false
                 };
 
-                // If we're in ALT_SCREEN and the user sends keyboard input,
-                // schedule a mode reset. This catches ALL exit methods:
-                // - Ctrl+C (SIGINT), Ctrl+D (EOF), normal quit commands, etc.
+                // If the terminal has ALT_SCREEN or MOUSE_MODE set and the
+                // user sends keyboard input, schedule a mode reset.
+                // This catches ALL exit methods from TUI apps:
+                // - Ctrl+C (SIGINT), normal quit, Escape, etc.
                 // The 500ms delay lets the TUI app respond — if it's still
-                // running it will re-enter ALT_SCREEN and cancel the reset.
-                // If it exited, the modes are cleaned up automatically.
-                if in_alt_screen {
+                // running it will keep its modes active.
+                if has_stale_modes {
                     // Only trigger if there's been no PTY output recently
                     // (TUI apps constantly output; a quiet terminal = app exited)
                     let output_stale =
@@ -617,14 +618,23 @@ impl TerminalPanel {
                 if now >= reset_at {
                     self.pending_mode_reset = None;
                     if let Ok(mut term) = pty.term.lock() {
-                        if term.mode().contains(TermMode::ALT_SCREEN) {
+                        if term
+                            .mode()
+                            .intersects(TermMode::ALT_SCREEN | TermMode::MOUSE_MODE)
+                        {
                             let mut processor: alacritty_terminal::vte::ansi::Processor =
                                 alacritty_terminal::vte::ansi::Processor::new();
-                            // Exit alt screen, disable mouse tracking + SGR mouse,
-                            // reset cursor keys, disable bracketed paste
+                            // Clear ALL stale modes:
+                            // 1049  = exit alt screen
+                            // 1000  = disable click mouse tracking
+                            // 1002  = disable button-event mouse tracking
+                            // 1003  = disable any-event mouse tracking
+                            // 1006  = disable SGR mouse encoding
+                            // 1    = reset cursor keys
+                            // 2004  = disable bracketed paste
                             processor.advance(
                                 &mut *term,
-                                b"\x1b[?1049l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b[?2004l",
+                                b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b[?2004l",
                             );
                         }
                     }
