@@ -2,10 +2,14 @@
 
 ## What ships
 
-- Source code (zip + tar.gz) — auto-included by GitHub
-- Windows MSI installer (`void-X.Y.Z-x86_64.msi`)
+| Platform | Artifact |
+|---|---|
+| Windows x64 | NSIS installer (`void-X.Y.Z-x86_64-setup.exe`) |
+| macOS Apple Silicon | DMG (`void-X.Y.Z-aarch64-apple-darwin-setup.dmg`) |
+| macOS Intel | DMG (`void-X.Y.Z-x86_64-apple-darwin-setup.dmg`) |
+| Linux x64 | `.deb` + `.tar.gz` |
 
-macOS (.dmg) and Linux (.deb) installers will be added in a future release.
+Source code (zip + tar.gz) is auto-included by GitHub.
 
 ## Before releasing
 
@@ -30,19 +34,21 @@ git push
 ## Cut a release
 
 1. Go to **Actions** → **Release** → **Run workflow** on the `main` branch
-2. The workflow will:
-   - Read the version from `Cargo.toml`
-   - Create and push a `vX.Y.Z` tag
-   - Create a draft GitHub release
-   - Build the Windows binary and MSI installer
-   - Upload the MSI to the release
-   - Publish the release
+2. Optionally provide a version override (otherwise reads from `Cargo.toml`)
+3. The workflow will:
+   - Resolve the version (from input or `Cargo.toml`)
+   - Build for all platforms (Windows, macOS ARM64 + x64, Linux)
+   - Package installers (NSIS `.exe`, `.dmg`, `.deb`, `.tar.gz`)
+   - Create a GitHub release with auto-generated release notes
+   - Upload all artifacts
+
+The release publishes even if some platforms fail (as long as at least one succeeds).
 
 ## If something goes wrong
 
-If a build fails, the release stays in draft. To retry:
+If a build fails, the release still publishes with whichever platforms succeeded. To retry a failed platform:
 
-1. Delete the draft release from GitHub
+1. Delete the release from GitHub
 2. Delete the tag: `git push origin :refs/tags/vX.Y.Z`
 3. Fix the issue and push
 4. Run the workflow again

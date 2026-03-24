@@ -14,7 +14,9 @@
 - Real terminal emulation powered by alacritty_terminal (ANSI/VT100, 256-color, truecolor)
 - Workspaces, command palette, minimap, keyboard-first design
 
-<video src="assets/demo.mp4" autoplay loop muted playsinline></video>
+<p align="center">
+  <img src="assets/demo.gif" alt="Void demo" width="100%" />
+</p>
 
 ## Getting Started
 
@@ -109,7 +111,6 @@ src/
 - [ ] Embedded webviews (CEF/Servo offscreen rendering)
 - [ ] Plugin system
 
-See [STATUS.md](STATUS.md) for detailed progress and [PRD.md](PRD.md) for the full roadmap.
 
 ## Contributing
 
