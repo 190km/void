@@ -205,7 +205,7 @@ impl VoidApp {
         }
     }
 
-    fn execute_command(&mut self, cmd: Command, screen_rect: egui::Rect) {
+    fn execute_command(&mut self, cmd: Command, ctx: &egui::Context, screen_rect: egui::Rect) {
         match cmd {
             Command::NewTerminal => self.spawn_terminal(),
             Command::CloseTerminal => self.ws_mut().close_focused(),
@@ -233,7 +233,12 @@ impl VoidApp {
             Command::ZoomToFit => self.zoom_to_fit(screen_rect),
             Command::FocusNext => self.ws_mut().focus_next(),
             Command::FocusPrev => self.ws_mut().focus_prev(),
-            Command::ToggleFullscreen => {}
+            Command::ToggleFullscreen => {
+                let is_fullscreen = ctx.input(|i| {
+                    i.viewport().fullscreen.unwrap_or(false)
+                });
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+            }
         }
     }
 
@@ -345,7 +350,7 @@ impl eframe::App for VoidApp {
         }
 
         if let Some(cmd) = self.handle_shortcuts(ctx) {
-            self.execute_command(cmd, canvas_rect_for_commands);
+            self.execute_command(cmd, ctx, canvas_rect_for_commands);
         }
 
         // Sync titles
@@ -365,7 +370,7 @@ impl eframe::App for VoidApp {
 
         // Command palette
         if let Some(cmd) = self.command_palette.show(ctx) {
-            self.execute_command(cmd, canvas_rect_for_commands);
+            self.execute_command(cmd, ctx, canvas_rect_for_commands);
         }
 
         // Rename dialog
