@@ -55,6 +55,7 @@ pub struct PtyHandle {
     last_output_at: Arc<Mutex<Instant>>,
     master: Box<dyn portable_pty::MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    child_pid: Option<u32>,
     _event_thread: thread::JoinHandle<()>,
     _reader_thread: thread::JoinHandle<()>,
     _waiter_thread: thread::JoinHandle<()>,
@@ -87,6 +88,7 @@ impl PtyHandle {
         }
 
         let mut child = pair.slave.spawn_command(cmd)?;
+        let child_pid = child.process_id();
         let killer = child.clone_killer();
         drop(pair.slave);
 
@@ -222,6 +224,7 @@ impl PtyHandle {
             last_output_at,
             master: pair.master,
             killer,
+            child_pid,
             _event_thread: event_thread,
             _reader_thread: reader_thread,
             _waiter_thread: waiter_thread,
@@ -270,6 +273,15 @@ impl PtyHandle {
             .unwrap_or(Duration::from_secs(999))
     }
 
+    /// Get the current working directory of the child process.
+    pub fn current_cwd(&self) -> Option<std::path::PathBuf> {
+        let pid = self.child_pid?;
+        if !self.is_alive() {
+            return None;
+        }
+        get_process_cwd(pid)
+    }
+
     pub fn should_hide_cursor_for_streaming_output(&self) -> bool {
         // Cursor is always visible — hiding it during output caused
         // the cursor to flicker/disappear while the user was typing.
@@ -282,4 +294,30 @@ impl Drop for PtyHandle {
         self.alive.store(false, Ordering::Relaxed);
         let _ = self.killer.kill();
     }
+}
+
+/// Get the current working directory of a process by PID.
+#[cfg(target_os = "linux")]
+fn get_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{}/cwd", pid)).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn get_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
+    use std::process::Command;
+    let output = Command::new("lsof")
+        .args(["-p", &pid.to_string(), "-Fn", "-d", "cwd"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find(|l| l.starts_with('n'))
+        .map(|l| std::path::PathBuf::from(&l[1..]))
+}
+
+#[cfg(windows)]
+fn get_process_cwd(_pid: u32) -> Option<std::path::PathBuf> {
+    // On Windows, reading another process's CWD requires NtQueryInformationProcess.
+    // Fall back to None — the workspace CWD will be used instead.
+    None
 }

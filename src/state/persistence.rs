@@ -35,6 +35,9 @@ pub struct PanelState {
     pub color: [u8; 3],
     pub z_index: u32,
     pub focused: bool,
+    /// Current working directory of the shell when the panel was saved.
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
 }
 
 /// Return the path to the state file.

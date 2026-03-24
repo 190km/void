@@ -254,23 +254,27 @@ impl TerminalPanel {
     }
 
     /// Create a panel from saved state, spawning a new terminal process.
+    /// Uses the panel's saved CWD if available, falls back to workspace CWD.
     pub fn from_saved(
         ctx: &egui::Context,
         state: &crate::state::persistence::PanelState,
-        cwd: Option<&std::path::Path>,
+        workspace_cwd: Option<&std::path::Path>,
     ) -> Self {
         let position = Pos2::new(state.position[0], state.position[1]);
         let size = Vec2::new(state.size[0], state.size[1]);
         let color = Color32::from_rgb(state.color[0], state.color[1], state.color[2]);
 
+        // Prefer per-panel CWD (from last session), fall back to workspace CWD
+        let cwd = state.cwd.as_deref().or(workspace_cwd);
         let mut panel = Self::new_with_terminal(ctx, position, size, color, cwd);
         panel.z_index = state.z_index;
         panel.focused = state.focused;
         panel
     }
 
-    /// Snapshot the panel layout for persistence (no PTY state).
+    /// Snapshot the panel layout for persistence (includes CWD if available).
     pub fn to_saved(&self) -> crate::state::persistence::PanelState {
+        let cwd = self.pty.as_ref().and_then(|pty| pty.current_cwd());
         crate::state::persistence::PanelState {
             title: self.title.clone(),
             position: [self.position.x, self.position.y],
@@ -278,6 +282,7 @@ impl TerminalPanel {
             color: [self.color.r(), self.color.g(), self.color.b()],
             z_index: self.z_index,
             focused: self.focused,
+            cwd,
         }
     }
 
