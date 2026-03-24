@@ -160,11 +160,24 @@ impl PtyHandle {
                             let _ = clipboard.set_text(data);
                         }
                     }
+                    Event::ClipboardLoad(_clipboard_type, formatter) => {
+                        // OSC 52 query: program wants to read clipboard contents
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(text) = clipboard.get_text() {
+                                let response = formatter(&text);
+                                if let Ok(mut w) = writer_clone.lock() {
+                                    let _ = w.write_all(response.as_bytes());
+                                    let _ = w.flush();
+                                }
+                            }
+                        }
+                    }
+                    Event::ColorRequest(index, _) => {
+                        log::debug!("Unhandled ColorRequest for index {}", index);
+                    }
                     Event::Wakeup
                     | Event::MouseCursorDirty
                     | Event::CursorBlinkingChange
-                    | Event::ClipboardLoad(_, _)
-                    | Event::ColorRequest(_, _)
                     | Event::TextAreaSizeRequest(_) => {}
                 }
 
