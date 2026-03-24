@@ -43,6 +43,7 @@ notify = "7"
 arboard = "3"
 rfd = "0.15"
 minreq = { version = "2", features = ["https-native"] }
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3
