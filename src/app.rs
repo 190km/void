@@ -234,9 +234,7 @@ impl VoidApp {
             Command::FocusNext => self.ws_mut().focus_next(),
             Command::FocusPrev => self.ws_mut().focus_prev(),
             Command::ToggleFullscreen => {
-                let is_fullscreen = ctx.input(|i| {
-                    i.viewport().fullscreen.unwrap_or(false)
-                });
+                let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
             }
         }
