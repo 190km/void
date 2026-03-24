@@ -108,12 +108,13 @@ impl CommandPalette {
         let palette_x = screen.center().x - palette_width / 2.0;
         let palette_y = screen.min.y + 80.0;
 
-        // Semi-transparent backdrop
+        // Semi-transparent backdrop — Foreground so it's above canvas but below palette
         egui::Area::new(egui::Id::new("cmd_palette_backdrop"))
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
+            .interactable(true)
             .show(ctx, |ui| {
-                let response = ui.allocate_response(screen.size(), egui::Sense::click());
+                let response = ui.allocate_response(screen.size(), egui::Sense::click_and_drag());
                 ui.painter().rect_filled(
                     screen,
                     0.0,
@@ -124,9 +125,9 @@ impl CommandPalette {
                 }
             });
 
-        // Palette window
+        // Palette window — Tooltip so it renders above the backdrop
         egui::Area::new(egui::Id::new("cmd_palette"))
-            .order(egui::Order::Foreground)
+            .order(egui::Order::Tooltip)
             .fixed_pos(Pos2::new(palette_x, palette_y))
             .show(ctx, |ui| {
                 egui::Frame::default()

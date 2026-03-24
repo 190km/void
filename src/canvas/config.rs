@@ -9,8 +9,7 @@ pub const ZOOM_KEYBOARD_FACTOR: f32 = 1.15;
 
 // ===== Grid =====
 pub const GRID_SPACING: f32 = 40.0;
-pub const DOT_RADIUS: f32 = 0.8;
-pub const GRID_COLOR: Color32 = Color32::from_rgb(25, 25, 25);
+pub const GRID_COLOR: Color32 = Color32::from_rgb(30, 30, 30);
 
 // ===== Snap =====
 pub const SNAP_THRESHOLD: f32 = 8.0;

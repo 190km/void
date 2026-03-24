@@ -1,10 +1,12 @@
 // Background dot grid
 
-use super::config::{DOT_RADIUS, GRID_COLOR, GRID_SPACING};
+use super::config::{GRID_COLOR, GRID_SPACING};
 use super::viewport::Viewport;
 use egui::{Pos2, Rect, Ui};
 
-pub fn draw_dot_grid(ui: &Ui, viewport: &Viewport, screen_rect: Rect) {
+const DOT_RADIUS: f32 = 0.8;
+
+pub fn draw_grid(ui: &Ui, viewport: &Viewport, screen_rect: Rect) {
     let painter = ui.painter_at(screen_rect);
     let visible = viewport.visible_canvas_rect(screen_rect);
 
