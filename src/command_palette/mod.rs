@@ -108,9 +108,9 @@ impl CommandPalette {
         let palette_x = screen.center().x - palette_width / 2.0;
         let palette_y = screen.min.y + 80.0;
 
-        // Semi-transparent backdrop — Foreground so it's above canvas but below palette
+        // Semi-transparent backdrop — Tooltip so it's above terminal content but below palette
         egui::Area::new(egui::Id::new("cmd_palette_backdrop"))
-            .order(egui::Order::Foreground)
+            .order(egui::Order::Tooltip)
             .fixed_pos(screen.min)
             .interactable(true)
             .show(ctx, |ui| {
@@ -125,9 +125,9 @@ impl CommandPalette {
                 }
             });
 
-        // Palette window — Tooltip so it renders above the backdrop
+        // Palette window — Debug so it renders above terminal content and backdrop
         egui::Area::new(egui::Id::new("cmd_palette"))
-            .order(egui::Order::Tooltip)
+            .order(egui::Order::Debug)
             .fixed_pos(Pos2::new(palette_x, palette_y))
             .show(ctx, |ui| {
                 egui::Frame::default()

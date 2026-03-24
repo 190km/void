@@ -372,7 +372,7 @@ impl eframe::App for VoidApp {
         if let Some(rename_id) = self.renaming_panel {
             let mut close = false;
             egui::Area::new(egui::Id::new("rename_dialog"))
-                .order(egui::Order::Foreground)
+                .order(egui::Order::Debug)
                 .fixed_pos(Pos2::new(
                     screen_rect.center().x - 150.0,
                     screen_rect.min.y + 120.0,
@@ -802,7 +802,7 @@ impl eframe::App for VoidApp {
             let mm_h = 170.0;
             let mm_pos = Pos2::new(canvas_rect.max.x - mm_w, canvas_rect.max.y - mm_h);
             egui::Area::new(egui::Id::new("minimap_overlay"))
-                .order(egui::Order::Foreground)
+                .order(egui::Order::Debug)
                 .fixed_pos(mm_pos)
                 .interactable(true)
                 .show(ctx, |ui| {

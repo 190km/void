@@ -7,8 +7,8 @@ use alacritty_terminal::term::TermMode;
 use egui::{Color32, Key, Modifiers, Pos2, Rect, Vec2};
 use uuid::Uuid;
 
-const TITLE_BAR_HEIGHT: f32 = 36.0;
-const BORDER_RADIUS: f32 = 10.0;
+pub(crate) const TITLE_BAR_HEIGHT: f32 = 36.0;
+pub(crate) const BORDER_RADIUS: f32 = 10.0;
 const MIN_WIDTH: f32 = 400.0;
 const MIN_HEIGHT: f32 = 280.0;
 const SCROLLBAR_WIDTH: f32 = 8.0;
@@ -81,8 +81,10 @@ pub struct TerminalPanel {
     last_cols: u16,
     last_rows: u16,
     spawn_error: Option<String>,
-    // Selection state (cell coordinates)
+    // Selection state — viewport cell coordinates at the time of selection.
+    // Rows are relative to the viewport when selection_display_offset was captured.
     selection: Option<(usize, usize, usize, usize)>, // (start_col, start_row, end_col, end_row)
+    selection_display_offset: usize,
     selecting: bool,
     scroll_remainder: f32,
     scrollbar_grab_offset: Option<f32>,
@@ -206,6 +208,7 @@ impl TerminalPanel {
             last_rows: rows,
             spawn_error,
             selection: None,
+            selection_display_offset: 0,
             selecting: false,
             scroll_remainder: 0.0,
             scrollbar_grab_offset: None,
@@ -232,6 +235,7 @@ impl TerminalPanel {
             last_rows: 24,
             spawn_error: None,
             selection: None,
+            selection_display_offset: 0,
             selecting: false,
             scroll_remainder: 0.0,
             scrollbar_grab_offset: None,
@@ -377,17 +381,7 @@ impl TerminalPanel {
         } else {
             // Normal mode: scroll display buffer
             if let Ok(mut term) = pty.term.lock() {
-                let before = term.grid().display_offset();
                 term.scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
-                let after = term.grid().display_offset();
-                // Only adjust selection by the actual scroll delta (0 if clamped at boundary)
-                let actual = after as i32 - before as i32;
-                if actual != 0 {
-                    if let Some(ref mut sel) = self.selection {
-                        sel.1 = (sel.1 as i32 + actual).max(0) as usize;
-                        sel.3 = (sel.3 as i32 + actual).max(0) as usize;
-                    }
-                }
             }
         }
     }
@@ -405,13 +399,6 @@ impl TerminalPanel {
             let delta = target as i32 - current as i32;
             if delta != 0 {
                 term.scroll_display(alacritty_terminal::grid::Scroll::Delta(delta));
-                let actual = term.grid().display_offset() as i32 - current as i32;
-                if actual != 0 {
-                    if let Some(ref mut sel) = self.selection {
-                        sel.1 = (sel.1 as i32 + actual).max(0) as usize;
-                        sel.3 = (sel.3 as i32 + actual).max(0) as usize;
-                    }
-                }
             }
         }
     }
@@ -488,7 +475,8 @@ impl TerminalPanel {
         let (sc, sr, ec, er) = self.selection?;
         let pty = self.pty.as_ref()?;
         let term = pty.term.lock().ok()?;
-        let text = extract_selection_text(&term, sc, sr, ec, er);
+        let text =
+            extract_selection_text(&term, sc, sr, ec, er, self.selection_display_offset);
         if text.is_empty() {
             None
         } else {
@@ -526,57 +514,19 @@ impl TerminalPanel {
             BORDER_DEFAULT
         };
 
-        // ========== PAINT CHROME ==========
-
-        painter.rect_filled(
-            pr.translate(Vec2::new(0.0, 3.0)).expand(2.0),
-            BORDER_RADIUS + 2.0,
-            Color32::from_rgba_premultiplied(0, 0, 0, 35),
-        );
-        painter.rect_filled(pr, BORDER_RADIUS, PANEL_BG);
-        painter.rect_stroke(pr, BORDER_RADIUS, egui::Stroke::new(1.0, border_color));
+        // ========== CANVAS CHROME (interactions only, visuals in Tooltip) ==========
+        // The canvas layer provides hit-test areas. All visuals are in the shared
+        // Tooltip layer so there's only ONE instance of each element (no double-rendering).
 
         let sep_y = pr.min.y + TITLE_BAR_HEIGHT;
-        painter.line_segment(
-            [
-                Pos2::new(pr.min.x + 8.0, sep_y),
-                Pos2::new(pr.max.x - 8.0, sep_y),
-            ],
-            egui::Stroke::new(0.5, Color32::from_rgb(40, 40, 40)),
-        );
-
         let dot_x = pr.min.x + 12.0;
         let dot_y = pr.min.y + TITLE_BAR_HEIGHT * 0.5;
-        painter.circle_filled(
-            Pos2::new(dot_x, dot_y),
-            3.0,
-            if self.focused {
-                self.color
-            } else {
-                self.color.linear_multiply(0.4)
-            },
-        );
         let status = if self.pty.is_some() {
-            if self.is_alive() {
-                ""
-            } else {
-                "exited · "
-            }
+            if self.is_alive() { "" } else { "exited · " }
         } else {
             ""
         };
-        let tc = if self.is_alive() || self.pty.is_none() {
-            FG
-        } else {
-            FG_DIM
-        };
-        painter.text(
-            Pos2::new(dot_x + 10.0, dot_y - 7.0),
-            egui::Align2::LEFT_TOP,
-            format!("{}{}", status, self.title),
-            egui::FontId::proportional(13.0),
-            tc,
-        );
+        let tc = if self.is_alive() || self.pty.is_none() { FG } else { FG_DIM };
 
         let close_center = Pos2::new(pr.max.x - 14.0, dot_y);
         let close_rect = Rect::from_center_size(close_center, Vec2::splat(16.0));
@@ -585,31 +535,32 @@ impl TerminalPanel {
             egui::Id::new(self.id).with("close"),
             egui::Sense::click(),
         );
-        {
-            let (cross_color, cross_size) = if close_resp.hovered() {
-                painter.circle_filled(close_center, 8.0, Color32::from_rgb(200, 60, 60));
-                (Color32::WHITE, 3.5)
-            } else {
-                (Color32::from_rgb(100, 100, 100), 3.0)
-            };
-            let s = egui::Stroke::new(1.2, cross_color);
-            painter.line_segment(
-                [
-                    Pos2::new(close_center.x - cross_size, close_center.y - cross_size),
-                    Pos2::new(close_center.x + cross_size, close_center.y + cross_size),
-                ],
-                s,
-            );
-            painter.line_segment(
-                [
-                    Pos2::new(close_center.x + cross_size, close_center.y - cross_size),
-                    Pos2::new(close_center.x - cross_size, close_center.y + cross_size),
-                ],
-                s,
-            );
-        }
         if close_resp.clicked() {
             ix.action = Some(PanelAction::Close);
+        }
+
+        // ========== TOOLTIP PANEL FILL (shared layer, z-ordered by paint order) ==========
+        // Full-panel opaque fill so higher-z panels fully occlude lower-z panels.
+        let zoom = transform.scaling;
+        let screen_pr = Rect::from_min_max(transform * pr.min, transform * pr.max);
+        let shared_layer = egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::new("term_text"),
+        );
+        {
+            // Full-panel fill — occludes everything from lower-z panels.
+            let cp = ui
+                .ctx()
+                .layer_painter(shared_layer)
+                .with_clip_rect(screen_pr.expand(6.0 * zoom).intersect(screen_clip));
+            cp.rect_filled(
+                screen_pr
+                    .translate(Vec2::new(0.0, 3.0 * zoom))
+                    .expand(2.0 * zoom),
+                (BORDER_RADIUS + 2.0) * zoom,
+                Color32::from_rgba_premultiplied(0, 0, 0, 35),
+            );
+            cp.rect_filled(screen_pr, BORDER_RADIUS * zoom, PANEL_BG);
         }
 
         // ========== TERMINAL CONTENT ==========
@@ -618,6 +569,7 @@ impl TerminalPanel {
         let content_rect = Self::terminal_content_rect(body);
         let scrollbar_rect = Self::scrollbar_track_rect(body);
         let mut scrollbar_state = None;
+        let mut sb_thumb_color = SCROLLBAR_THUMB;
         let mut local_interactions_enabled = true;
         let hide_cursor_for_output = self
             .pty
@@ -681,6 +633,7 @@ impl TerminalPanel {
                     SCROLLBAR_THUMB
                 };
                 painter.rect_filled(thumb_rect, SCROLLBAR_WIDTH * 0.5, thumb_color);
+                sb_thumb_color = thumb_color;
 
                 if scrollbar_resp.clicked_by(egui::PointerButton::Primary) {
                     ix.clicked = true;
@@ -747,46 +700,181 @@ impl TerminalPanel {
             }
         }
 
-        // Draw selection highlight (clipped to body).
+        // Draw selection highlight in the shared Tooltip layer (above terminal text).
+        // Selection rows are stored relative to the viewport at selection_display_offset.
+        // We adjust by the scroll delta so the highlight follows content and scrolls off-screen.
         if local_interactions_enabled {
             if let Some((sc, sr, ec, er)) = self.selection {
                 let (cw, ch) = crate::terminal::renderer::cell_size(ui.ctx());
                 let pad_x = crate::terminal::renderer::PAD_X;
                 let pad_y = crate::terminal::renderer::PAD_Y;
                 let max_col = self.last_cols as usize;
-                let max_row = self.last_rows as usize;
+                let max_row = self.last_rows as i32;
 
                 let (start_row, start_col, end_row, end_col) = if sr < er || (sr == er && sc <= ec)
                 {
-                    (
-                        sr.min(max_row.saturating_sub(1)),
-                        sc.min(max_col.saturating_sub(1)),
-                        er.min(max_row.saturating_sub(1)),
-                        ec.min(max_col.saturating_sub(1)),
-                    )
+                    (sr, sc.min(max_col.saturating_sub(1)), er, ec.min(max_col.saturating_sub(1)))
                 } else {
-                    (
-                        er.min(max_row.saturating_sub(1)),
-                        ec.min(max_col.saturating_sub(1)),
-                        sr.min(max_row.saturating_sub(1)),
-                        sc.min(max_col.saturating_sub(1)),
-                    )
+                    (er, ec.min(max_col.saturating_sub(1)), sr, sc.min(max_col.saturating_sub(1)))
                 };
 
-                let clipped = painter.with_clip_rect(content_rect);
-                for row in start_row..=end_row {
-                    let c0 = if row == start_row { start_col } else { 0 };
-                    let c1 = (if row == end_row { end_col + 1 } else { max_col }).min(max_col);
+                // Adjust rows for scroll: positive delta = scrolled back = rows move down
+                let current_offset =
+                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0) as i32;
+                let offset_delta = current_offset - self.selection_display_offset as i32;
+                let adj_start = start_row as i32 + offset_delta;
+                let adj_end = end_row as i32 + offset_delta;
+
+                let screen_content = Rect::from_min_max(
+                    transform * content_rect.min,
+                    transform * content_rect.max,
+                )
+                .intersect(screen_clip);
+                let sel_painter = ui
+                    .ctx()
+                    .layer_painter(shared_layer)
+                    .with_clip_rect(screen_content);
+                for row_i in adj_start..=adj_end {
+                    if row_i < 0 || row_i >= max_row {
+                        continue;
+                    }
+                    let row = row_i as usize;
+                    let orig_row = row_i - offset_delta; // original selection row
+                    let c0 = if orig_row == start_row as i32 {
+                        start_col
+                    } else {
+                        0
+                    };
+                    let c1 = (if orig_row == end_row as i32 {
+                        end_col + 1
+                    } else {
+                        max_col
+                    })
+                    .min(max_col);
                     let x0 = content_rect.min.x + pad_x + c0 as f32 * cw;
                     let y0 = content_rect.min.y + pad_y + row as f32 * ch;
                     let x1 = content_rect.min.x + pad_x + c1 as f32 * cw;
-                    let sel_rect = Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y0 + ch));
-                    clipped.rect_filled(sel_rect, 0.0, SELECTION_BG);
+                    let sel_rect = Rect::from_min_max(
+                        transform * Pos2::new(x0, y0),
+                        transform * Pos2::new(x1, y0 + ch),
+                    );
+                    sel_painter.rect_filled(sel_rect, 0.0, SELECTION_BG);
                 }
             }
         } else {
             self.selecting = false;
         }
+
+        // ========== TOOLTIP CHROME OVERLAY ==========
+        // All chrome in the shared Tooltip layer — title, border, close, scrollbar, grip.
+        // Since the panel fill AND chrome are in the same layer, they move together
+        // during zoom — no relative jitter.
+        {
+            let cp = ui.ctx().layer_painter(shared_layer)
+                .with_clip_rect(screen_pr.expand(2.0 * zoom).intersect(screen_clip));
+
+            let snap = |p: Pos2| Pos2::new(p.x.round(), p.y.round());
+
+            // Border
+            cp.rect_stroke(screen_pr, BORDER_RADIUS * zoom, egui::Stroke::new(zoom.max(0.5), border_color));
+            // Separator
+            let screen_sep_y = (transform * Pos2::new(0.0, sep_y)).y;
+            cp.line_segment(
+                [
+                    Pos2::new(screen_pr.min.x + 8.0 * zoom, screen_sep_y),
+                    Pos2::new(screen_pr.max.x - 8.0 * zoom, screen_sep_y),
+                ],
+                egui::Stroke::new((0.5 * zoom).max(0.5), Color32::from_rgb(40, 40, 40)),
+            );
+            // Colored dot
+            let screen_dot = snap(transform * Pos2::new(dot_x, dot_y));
+            cp.circle_filled(
+                screen_dot,
+                3.0 * zoom,
+                if self.focused { self.color } else { self.color.linear_multiply(0.4) },
+            );
+            // Title text — rendered char-by-char on a fixed grid (same technique
+            // as terminal text) so metrics changes don't cause relative jitter.
+            {
+                let title_str = format!("{}{}", status, self.title);
+                let title_font = egui::FontId::monospace(13.0 * zoom);
+                let title_base = transform * Pos2::new(dot_x + 10.0, dot_y - 7.0);
+                // Measure char width at base size, then scale by zoom (constant base = no jitter)
+                let title_cw = ui.ctx().fonts(|fonts| {
+                    fonts
+                        .layout_no_wrap(
+                            "M".to_string(),
+                            egui::FontId::monospace(13.0),
+                            Color32::WHITE,
+                        )
+                        .rect
+                        .width()
+                }) * zoom;
+                for (i, ch) in title_str.chars().enumerate() {
+                    if ch == ' ' {
+                        continue;
+                    }
+                    cp.text(
+                        Pos2::new(title_base.x + i as f32 * title_cw, title_base.y),
+                        egui::Align2::LEFT_TOP,
+                        ch.to_string(),
+                        title_font.clone(),
+                        tc,
+                    );
+                }
+            }
+            // Close button
+            {
+                let sc = snap(transform * close_center);
+                let (cc, cs) = if close_resp.hovered() {
+                    cp.circle_filled(sc, (8.0 * zoom).round().max(1.0), Color32::from_rgb(200, 60, 60));
+                    (Color32::WHITE, (3.5 * zoom).round().max(1.0))
+                } else {
+                    (Color32::from_rgb(100, 100, 100), (3.0 * zoom).round().max(1.0))
+                };
+                let stroke = egui::Stroke::new((1.2 * zoom).max(0.5), cc);
+                cp.line_segment(
+                    [Pos2::new(sc.x - cs, sc.y - cs), Pos2::new(sc.x + cs, sc.y + cs)],
+                    stroke,
+                );
+                cp.line_segment(
+                    [Pos2::new(sc.x + cs, sc.y - cs), Pos2::new(sc.x - cs, sc.y + cs)],
+                    stroke,
+                );
+            }
+            // Scrollbar
+            if let Some(state) = scrollbar_state {
+                let screen_sb = Rect::from_min_max(
+                    transform * scrollbar_rect.min, transform * scrollbar_rect.max,
+                );
+                cp.rect_filled(screen_sb, SCROLLBAR_WIDTH * 0.5 * zoom, SCROLLBAR_TRACK);
+                if state.has_history() {
+                    let thumb = state.thumb_rect(scrollbar_rect);
+                    let screen_thumb = Rect::from_min_max(
+                        transform * thumb.min, transform * thumb.max,
+                    );
+                    cp.rect_filled(screen_thumb, SCROLLBAR_WIDTH * 0.5 * zoom, sb_thumb_color);
+                }
+            }
+            // Resize grip
+            {
+                let grip_color = Color32::from_rgb(60, 60, 60);
+                let gx = pr.max.x - 5.0;
+                let gy = pr.max.y - 5.0;
+                for i in 0..3 {
+                    let offset = i as f32 * 4.0;
+                    cp.circle_filled(transform * Pos2::new(gx - offset, gy), 1.2 * zoom, grip_color);
+                    if i > 0 {
+                        cp.circle_filled(transform * Pos2::new(gx, gy - offset), 1.2 * zoom, grip_color);
+                    }
+                    if i > 1 {
+                        cp.circle_filled(transform * Pos2::new(gx - 4.0, gy - 4.0), 1.2 * zoom, grip_color);
+                    }
+                }
+            }
+        }
+
+        // (Title bar elements are in the Tooltip chrome overlay below)
 
         // ========== INTERACTIONS ==========
 
@@ -886,6 +974,8 @@ impl TerminalPanel {
                         let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                         if let Some((start, end)) = self.word_boundaries_at(col, row) {
                             self.selection = Some((start, row, end, row));
+                            self.selection_display_offset =
+                                scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                         }
                     }
                 }
@@ -895,6 +985,8 @@ impl TerminalPanel {
                         let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                         let last_col = (self.last_cols as usize).saturating_sub(1);
                         self.selection = Some((0, row, last_col, row));
+                        self.selection_display_offset =
+                            scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                     }
                 }
                 _ => {
@@ -909,6 +1001,8 @@ impl TerminalPanel {
             if let Some(pos) = body_resp.interact_pointer_pos() {
                 let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                 self.selection = Some((col, row, col, row));
+                self.selection_display_offset =
+                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                 self.selecting = true;
             }
         }
@@ -1060,6 +1154,8 @@ impl TerminalPanel {
                 let last_col = (self.last_cols as usize).saturating_sub(1);
                 let last_row = (self.last_rows as usize).saturating_sub(1);
                 self.selection = Some((0, 0, last_col, last_row));
+                self.selection_display_offset =
+                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                 ui.close_menu();
             }
             ui.separator();
@@ -1156,6 +1252,7 @@ fn extract_selection_text(
     sr: usize,
     ec: usize,
     er: usize,
+    sel_display_offset: usize,
 ) -> String {
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Point};
@@ -1169,7 +1266,8 @@ fn extract_selection_text(
 
     let mut text = String::new();
     let cols = term.columns();
-    let display_offset = term.grid().display_offset();
+    // Use the display_offset from when the selection was made, not current
+    let display_offset = sel_display_offset;
 
     for row in start_row..=end_row {
         let c0 = if row == start_row { start_col } else { 0 };

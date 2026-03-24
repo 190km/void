@@ -1,4 +1,4 @@
-// Terminal renderer — backgrounds in canvas space, text in screen space for crisp zoom.
+// Terminal renderer — all content in canvas space, GPU-transformed for correct z-ordering.
 
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::point_to_viewport;
@@ -62,19 +62,19 @@ pub fn compute_grid_size_from_ctx(
     (cols as u16, rows as u16)
 }
 
-/// Render terminal content. Backgrounds in canvas space (GPU scales fine),
-/// text + cursor in screen space (crisp at any zoom level).
+/// Render terminal content. Everything in a shared Tooltip layer (screen space)
+/// for correct z-ordering between panels + crisp text at any zoom.
 #[allow(clippy::too_many_arguments)]
 pub fn render_terminal(
     ctx: &egui::Context,
-    painter: &egui::Painter,
+    _painter: &egui::Painter,
     term: &Term<EventProxy>,
     body_rect: Rect,
     focused: bool,
     hide_cursor_for_output: bool,
     transform: egui::emath::TSTransform,
     screen_clip: Rect,
-    panel_id: uuid::Uuid,
+    _panel_id: uuid::Uuid,
 ) {
     let (cw, ch) = measure_cell(ctx);
     if cw < 1.0 || ch < 1.0 {
@@ -82,74 +82,10 @@ pub fn render_terminal(
     }
 
     let zoom = transform.scaling;
-    let clipped = painter.with_clip_rect(body_rect);
-    let content = term.renderable_content();
-    let display_offset = content.display_offset;
-    let colors = content.colors;
     let (max_col, max_row) =
         grid_size_for_cell_metrics(body_rect.width(), body_rect.height(), cw, ch);
 
-    // --- Backgrounds (canvas space) ---
-    let mut run: Option<(Color32, f32, f32, f32)> = None;
-    for indexed in content.display_iter {
-        let Some(viewport_point) = point_to_viewport(display_offset, indexed.point) else {
-            continue;
-        };
-        let col = viewport_point.column.0;
-        let row = viewport_point.line;
-        if row >= max_row || col >= max_col {
-            continue;
-        }
-        let x = body_rect.min.x + PAD_X + col as f32 * cw;
-        let y = body_rect.min.y + PAD_Y + row as f32 * ch;
-        let cell = &indexed.cell;
-        let fl = cell.flags;
-        if fl.contains(Flags::WIDE_CHAR_SPACER) {
-            if let Some(ref mut r) = run {
-                r.3 += cw;
-            }
-            continue;
-        }
-        let bg = if fl.contains(Flags::INVERSE) {
-            colors::to_egui_color(cell.fg, colors)
-        } else {
-            colors::to_egui_color(cell.bg, colors)
-        };
-        let w = if fl.contains(Flags::WIDE_CHAR) {
-            cw * 2.0
-        } else {
-            cw
-        };
-        if bg != DEFAULT_BG {
-            if let Some(ref mut r) = run {
-                if r.0 == bg && (r.2 - y).abs() < 0.1 && (r.1 + r.3 - x).abs() < 0.5 {
-                    r.3 += w;
-                    continue;
-                }
-                clipped.rect_filled(
-                    Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)),
-                    0.0,
-                    r.0,
-                );
-            }
-            run = Some((bg, x, y, w));
-        } else if let Some(r) = run.take() {
-            clipped.rect_filled(
-                Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)),
-                0.0,
-                r.0,
-            );
-        }
-    }
-    if let Some(r) = run.take() {
-        clipped.rect_filled(
-            Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, ch)),
-            0.0,
-            r.0,
-        );
-    }
-
-    // --- Text (screen space — crisp at any zoom) ---
+    // --- Screen-space setup ---
     let screen_font_size = FONT_SIZE * zoom;
     let screen_font = FontId::monospace(screen_font_size);
     let screen_cw = cw * zoom;
@@ -160,13 +96,82 @@ pub fn render_terminal(
     let screen_body = Rect::from_min_max(transform * body_rect.min, transform * body_rect.max)
         .intersect(screen_clip);
 
+    // Single shared layer for ALL panels — draw order within a layer is FIFO,
+    // and panels are rendered in z_index order, so higher-z panels paint on top.
     let text_layer = egui::LayerId::new(
         egui::Order::Tooltip,
-        egui::Id::new("term_text").with(panel_id),
+        egui::Id::new("term_text"),
     );
     let text_painter = ctx.layer_painter(text_layer).with_clip_rect(screen_body);
     let screen_body_min = transform * body_rect.min;
 
+    // Opaque body fill — occludes content from lower-z panels.
+    text_painter.rect_filled(screen_body, 0.0, DEFAULT_BG);
+
+    // --- Cell backgrounds (screen space, run-length encoded) ---
+    let content = term.renderable_content();
+    let display_offset = content.display_offset;
+    let colors = content.colors;
+    let mut run: Option<(Color32, f32, f32, f32)> = None;
+    for indexed in content.display_iter {
+        let Some(viewport_point) = point_to_viewport(display_offset, indexed.point) else {
+            continue;
+        };
+        let col = viewport_point.column.0;
+        let row = viewport_point.line;
+        if row >= max_row || col >= max_col {
+            continue;
+        }
+        let sx = screen_body_min.x + screen_pad_x + col as f32 * screen_cw;
+        let sy = screen_body_min.y + screen_pad_y + row as f32 * screen_ch;
+        let cell = &indexed.cell;
+        let fl = cell.flags;
+        if fl.contains(Flags::WIDE_CHAR_SPACER) {
+            if let Some(ref mut r) = run {
+                r.3 += screen_cw;
+            }
+            continue;
+        }
+        let bg = if fl.contains(Flags::INVERSE) {
+            colors::to_egui_color(cell.fg, colors)
+        } else {
+            colors::to_egui_color(cell.bg, colors)
+        };
+        let w = if fl.contains(Flags::WIDE_CHAR) {
+            screen_cw * 2.0
+        } else {
+            screen_cw
+        };
+        if bg != DEFAULT_BG {
+            if let Some(ref mut r) = run {
+                if r.0 == bg && (r.2 - sy).abs() < 0.1 && (r.1 + r.3 - sx).abs() < 0.5 {
+                    r.3 += w;
+                    continue;
+                }
+                text_painter.rect_filled(
+                    Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, screen_ch)),
+                    0.0,
+                    r.0,
+                );
+            }
+            run = Some((bg, sx, sy, w));
+        } else if let Some(r) = run.take() {
+            text_painter.rect_filled(
+                Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, screen_ch)),
+                0.0,
+                r.0,
+            );
+        }
+    }
+    if let Some(r) = run.take() {
+        text_painter.rect_filled(
+            Rect::from_min_size(Pos2::new(r.1, r.2), Vec2::new(r.3, screen_ch)),
+            0.0,
+            r.0,
+        );
+    }
+
+    // --- Text (screen space — crisp at any zoom) ---
     let content2 = term.renderable_content();
     let display_offset = content2.display_offset;
     for indexed in content2.display_iter {
