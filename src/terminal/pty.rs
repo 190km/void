@@ -271,16 +271,9 @@ impl PtyHandle {
     }
 
     pub fn should_hide_cursor_for_streaming_output(&self) -> bool {
-        const CURSOR_HIDE_AFTER_OUTPUT: Duration = Duration::from_millis(220);
-
-        let Ok(last_output) = self.last_output_at.lock() else {
-            return false;
-        };
-        let Ok(last_input) = self.last_input_at.lock() else {
-            return false;
-        };
-
-        *last_output > *last_input && last_output.elapsed() < CURSOR_HIDE_AFTER_OUTPUT
+        // Cursor is always visible — hiding it during output caused
+        // the cursor to flicker/disappear while the user was typing.
+        false
     }
 }
 
