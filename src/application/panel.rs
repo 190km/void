@@ -124,18 +124,19 @@ impl ApplicationPanel {
         if self.embedded || self.child_hwnd.is_some() {
             return;
         }
-        let Some(ref process) = self.process else {
+        if self.process.is_none() {
             return;
-        };
-        let pid = process.id();
+        }
 
-        // Try to find the app's window
+        // Chrome/Electron apps spawn child processes — the window may belong
+        // to a different PID. Search by title instead.
         let app_entry = super::registry::APPS.iter().find(|a| a.id == self.app_id);
         let title_contains = app_entry
             .map(|a| a.window_title_contains)
             .unwrap_or(&self.app_id);
 
-        if let Some(hwnd) = super::embed::platform::find_window_by_pid(pid, title_contains) {
+        if let Some(hwnd) = super::embed::platform::find_window_by_title(title_contains, void_hwnd)
+        {
             if super::embed::platform::embed_window(hwnd, void_hwnd).is_ok() {
                 self.child_hwnd = Some(hwnd);
                 self.embedded = true;

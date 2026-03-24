@@ -4,7 +4,6 @@ pub struct AppEntry {
     pub name: &'static str,
     pub icon: &'static str,
     pub exe_candidates: &'static [&'static str],
-    #[allow(dead_code)]
     pub window_class: Option<&'static str>,
     pub window_title_contains: &'static str,
 }
@@ -25,7 +24,11 @@ pub const APPS: &[AppEntry] = &[
         id: "vscode",
         name: "Visual Studio Code",
         icon: "V",
-        exe_candidates: &["code", "C:\\Program Files\\Microsoft VS Code\\Code.exe"],
+        exe_candidates: &[
+            "code",
+            "C:\\Users\\%USERNAME%\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+            "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+        ],
         window_class: Some("Chrome_WidgetWin_1"),
         window_title_contains: "Visual Studio Code",
     },
@@ -40,7 +43,6 @@ pub fn resolve_exe(candidates: &[&str]) -> Option<String> {
         if path.exists() {
             return Some(expanded);
         }
-        // Check if it's in PATH
         if which_exists(&expanded) {
             return Some(expanded);
         }

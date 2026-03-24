@@ -6,23 +6,21 @@ pub mod platform {
     use windows::Win32::Foundation::*;
     use windows::Win32::UI::WindowsAndMessaging::*;
 
-    struct PidSearch {
-        pid: u32,
+    struct WindowSearch {
         title_contains: String,
+        exclude: isize, // HWND as isize to avoid Send issues
         result: Option<HWND>,
     }
 
     /// Find Void's own window handle by matching the title prefix.
     pub fn find_void_hwnd() -> Option<HWND> {
         let result: Mutex<Option<HWND>> = Mutex::new(None);
-
         unsafe {
             let _ = EnumWindows(
                 Some(enum_void_callback),
                 LPARAM(&result as *const _ as isize),
             );
         }
-
         result.into_inner().ok().flatten()
     }
 
@@ -52,13 +50,11 @@ pub mod platform {
         let child = std::process::Command::new(exe_path).spawn()?;
         let pid = child.id();
         let start = Instant::now();
-
         loop {
             if start.elapsed() > timeout {
                 return Err(anyhow::anyhow!("Timeout waiting for window from PID {pid}"));
             }
             std::thread::sleep(Duration::from_millis(200));
-
             if let Some(hwnd) = find_window_by_pid(pid, title_contains) {
                 return Ok((child, hwnd));
             }
@@ -109,9 +105,7 @@ pub mod platform {
             let style = GetWindowLongPtrW(child, GWL_STYLE) as u32;
             let new_style = (style & !WS_CHILD.0) | WS_OVERLAPPEDWINDOW.0 | WS_VISIBLE.0;
             SetWindowLongPtrW(child, GWL_STYLE, new_style as isize);
-
             let _ = SetParent(child, HWND::default());
-
             let _ = SetWindowPos(
                 child,
                 HWND_TOP,
@@ -131,27 +125,78 @@ pub mod platform {
         }
     }
 
+    /// Find a top-level visible window by title substring, excluding a specific HWND.
+    /// Used for Chrome/Electron apps that spawn child processes with different PIDs.
+    pub fn find_window_by_title(title_contains: &str, exclude: HWND) -> Option<HWND> {
+        let params = Mutex::new(WindowSearch {
+            title_contains: title_contains.to_string(),
+            exclude: exclude.0 as isize,
+            result: None,
+        });
+        unsafe {
+            let _ = EnumWindows(
+                Some(enum_title_callback),
+                LPARAM(&params as *const _ as isize),
+            );
+        }
+        params.into_inner().ok().and_then(|p| p.result)
+    }
+
+    unsafe extern "system" fn enum_title_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let params = &*(lparam.0 as *const Mutex<WindowSearch>);
+        if let Ok(mut p) = params.lock() {
+            // Skip Void's own window
+            if hwnd.0 as isize == p.exclude {
+                return TRUE;
+            }
+            // Only check visible windows
+            if !IsWindowVisible(hwnd).as_bool() {
+                return TRUE;
+            }
+            let mut title_buf = [0u16; 256];
+            let len = GetWindowTextW(hwnd, &mut title_buf);
+            if len > 0 {
+                let title = String::from_utf16_lossy(&title_buf[..len as usize]);
+                if title.contains(&p.title_contains) {
+                    p.result = Some(hwnd);
+                    return FALSE;
+                }
+            }
+        }
+        TRUE
+    }
+
     /// Find a window belonging to a specific process ID with a matching title.
+    #[allow(dead_code)]
     pub fn find_window_by_pid(pid: u32, title_contains: &str) -> Option<HWND> {
+        struct PidSearch {
+            pid: u32,
+            title_contains: String,
+            result: Option<HWND>,
+        }
+
         let params = Mutex::new(PidSearch {
             pid,
             title_contains: title_contains.to_string(),
             result: None,
         });
-
         unsafe {
             let _ = EnumWindows(
                 Some(enum_pid_callback),
                 LPARAM(&params as *const _ as isize),
             );
         }
-
         params.into_inner().ok().and_then(|p| p.result)
     }
 
     unsafe extern "system" fn enum_pid_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let params = &*(lparam.0 as *const Mutex<PidSearch>);
+        struct PidSearch {
+            pid: u32,
+            title_contains: String,
+            result: Option<HWND>,
+        }
 
+        let params = &*(lparam.0 as *const Mutex<PidSearch>);
         let mut window_pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
 
@@ -175,6 +220,7 @@ pub mod platform {
 #[cfg(not(windows))]
 pub mod platform {
     /// Stub for non-Windows platforms — app embedding not yet supported.
+    #[allow(dead_code)]
     pub fn find_void_hwnd() -> Option<()> {
         None
     }

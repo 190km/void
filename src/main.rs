@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
 mod application;
@@ -17,6 +17,7 @@ use anyhow::Result;
 use std::sync::Arc;
 
 fn main() -> Result<()> {
+    eprintln!("=== VOID STARTING ===");
     env_logger::init();
     log::info!("Starting Void terminal...");
 
