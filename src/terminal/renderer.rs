@@ -98,10 +98,7 @@ pub fn render_terminal(
 
     // Single shared layer for ALL panels — draw order within a layer is FIFO,
     // and panels are rendered in z_index order, so higher-z panels paint on top.
-    let text_layer = egui::LayerId::new(
-        egui::Order::Tooltip,
-        egui::Id::new("term_text"),
-    );
+    let text_layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("term_text"));
     let text_painter = ctx.layer_painter(text_layer).with_clip_rect(screen_body);
     let screen_body_min = transform * body_rect.min;
 

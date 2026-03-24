@@ -475,8 +475,7 @@ impl TerminalPanel {
         let (sc, sr, ec, er) = self.selection?;
         let pty = self.pty.as_ref()?;
         let term = pty.term.lock().ok()?;
-        let text =
-            extract_selection_text(&term, sc, sr, ec, er, self.selection_display_offset);
+        let text = extract_selection_text(&term, sc, sr, ec, er, self.selection_display_offset);
         if text.is_empty() {
             None
         } else {
@@ -522,11 +521,19 @@ impl TerminalPanel {
         let dot_x = pr.min.x + 12.0;
         let dot_y = pr.min.y + TITLE_BAR_HEIGHT * 0.5;
         let status = if self.pty.is_some() {
-            if self.is_alive() { "" } else { "exited · " }
+            if self.is_alive() {
+                ""
+            } else {
+                "exited · "
+            }
         } else {
             ""
         };
-        let tc = if self.is_alive() || self.pty.is_none() { FG } else { FG_DIM };
+        let tc = if self.is_alive() || self.pty.is_none() {
+            FG
+        } else {
+            FG_DIM
+        };
 
         let close_center = Pos2::new(pr.max.x - 14.0, dot_y);
         let close_rect = Rect::from_center_size(close_center, Vec2::splat(16.0));
@@ -543,10 +550,7 @@ impl TerminalPanel {
         // Full-panel opaque fill so higher-z panels fully occlude lower-z panels.
         let zoom = transform.scaling;
         let screen_pr = Rect::from_min_max(transform * pr.min, transform * pr.max);
-        let shared_layer = egui::LayerId::new(
-            egui::Order::Tooltip,
-            egui::Id::new("term_text"),
-        );
+        let shared_layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("term_text"));
         {
             // Full-panel fill — occludes everything from lower-z panels.
             let cp = ui
@@ -713,23 +717,30 @@ impl TerminalPanel {
 
                 let (start_row, start_col, end_row, end_col) = if sr < er || (sr == er && sc <= ec)
                 {
-                    (sr, sc.min(max_col.saturating_sub(1)), er, ec.min(max_col.saturating_sub(1)))
+                    (
+                        sr,
+                        sc.min(max_col.saturating_sub(1)),
+                        er,
+                        ec.min(max_col.saturating_sub(1)),
+                    )
                 } else {
-                    (er, ec.min(max_col.saturating_sub(1)), sr, sc.min(max_col.saturating_sub(1)))
+                    (
+                        er,
+                        ec.min(max_col.saturating_sub(1)),
+                        sr,
+                        sc.min(max_col.saturating_sub(1)),
+                    )
                 };
 
                 // Adjust rows for scroll: positive delta = scrolled back = rows move down
-                let current_offset =
-                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0) as i32;
+                let current_offset = scrollbar_state.map(|s| s.display_offset).unwrap_or(0) as i32;
                 let offset_delta = current_offset - self.selection_display_offset as i32;
                 let adj_start = start_row as i32 + offset_delta;
                 let adj_end = end_row as i32 + offset_delta;
 
-                let screen_content = Rect::from_min_max(
-                    transform * content_rect.min,
-                    transform * content_rect.max,
-                )
-                .intersect(screen_clip);
+                let screen_content =
+                    Rect::from_min_max(transform * content_rect.min, transform * content_rect.max)
+                        .intersect(screen_clip);
                 let sel_painter = ui
                     .ctx()
                     .layer_painter(shared_layer)
@@ -770,13 +781,19 @@ impl TerminalPanel {
         // Since the panel fill AND chrome are in the same layer, they move together
         // during zoom — no relative jitter.
         {
-            let cp = ui.ctx().layer_painter(shared_layer)
+            let cp = ui
+                .ctx()
+                .layer_painter(shared_layer)
                 .with_clip_rect(screen_pr.expand(2.0 * zoom).intersect(screen_clip));
 
             let snap = |p: Pos2| Pos2::new(p.x.round(), p.y.round());
 
             // Border
-            cp.rect_stroke(screen_pr, BORDER_RADIUS * zoom, egui::Stroke::new(zoom.max(0.5), border_color));
+            cp.rect_stroke(
+                screen_pr,
+                BORDER_RADIUS * zoom,
+                egui::Stroke::new(zoom.max(0.5), border_color),
+            );
             // Separator
             let screen_sep_y = (transform * Pos2::new(0.0, sep_y)).y;
             cp.line_segment(
@@ -791,7 +808,11 @@ impl TerminalPanel {
             cp.circle_filled(
                 screen_dot,
                 3.0 * zoom,
-                if self.focused { self.color } else { self.color.linear_multiply(0.4) },
+                if self.focused {
+                    self.color
+                } else {
+                    self.color.linear_multiply(0.4)
+                },
             );
             // Title text — rendered char-by-char on a fixed grid (same technique
             // as terminal text) so metrics changes don't cause relative jitter.
@@ -827,32 +848,45 @@ impl TerminalPanel {
             {
                 let sc = snap(transform * close_center);
                 let (cc, cs) = if close_resp.hovered() {
-                    cp.circle_filled(sc, (8.0 * zoom).round().max(1.0), Color32::from_rgb(200, 60, 60));
+                    cp.circle_filled(
+                        sc,
+                        (8.0 * zoom).round().max(1.0),
+                        Color32::from_rgb(200, 60, 60),
+                    );
                     (Color32::WHITE, (3.5 * zoom).round().max(1.0))
                 } else {
-                    (Color32::from_rgb(100, 100, 100), (3.0 * zoom).round().max(1.0))
+                    (
+                        Color32::from_rgb(100, 100, 100),
+                        (3.0 * zoom).round().max(1.0),
+                    )
                 };
                 let stroke = egui::Stroke::new((1.2 * zoom).max(0.5), cc);
                 cp.line_segment(
-                    [Pos2::new(sc.x - cs, sc.y - cs), Pos2::new(sc.x + cs, sc.y + cs)],
+                    [
+                        Pos2::new(sc.x - cs, sc.y - cs),
+                        Pos2::new(sc.x + cs, sc.y + cs),
+                    ],
                     stroke,
                 );
                 cp.line_segment(
-                    [Pos2::new(sc.x + cs, sc.y - cs), Pos2::new(sc.x - cs, sc.y + cs)],
+                    [
+                        Pos2::new(sc.x + cs, sc.y - cs),
+                        Pos2::new(sc.x - cs, sc.y + cs),
+                    ],
                     stroke,
                 );
             }
             // Scrollbar
             if let Some(state) = scrollbar_state {
                 let screen_sb = Rect::from_min_max(
-                    transform * scrollbar_rect.min, transform * scrollbar_rect.max,
+                    transform * scrollbar_rect.min,
+                    transform * scrollbar_rect.max,
                 );
                 cp.rect_filled(screen_sb, SCROLLBAR_WIDTH * 0.5 * zoom, SCROLLBAR_TRACK);
                 if state.has_history() {
                     let thumb = state.thumb_rect(scrollbar_rect);
-                    let screen_thumb = Rect::from_min_max(
-                        transform * thumb.min, transform * thumb.max,
-                    );
+                    let screen_thumb =
+                        Rect::from_min_max(transform * thumb.min, transform * thumb.max);
                     cp.rect_filled(screen_thumb, SCROLLBAR_WIDTH * 0.5 * zoom, sb_thumb_color);
                 }
             }
@@ -863,12 +897,24 @@ impl TerminalPanel {
                 let gy = pr.max.y - 5.0;
                 for i in 0..3 {
                     let offset = i as f32 * 4.0;
-                    cp.circle_filled(transform * Pos2::new(gx - offset, gy), 1.2 * zoom, grip_color);
+                    cp.circle_filled(
+                        transform * Pos2::new(gx - offset, gy),
+                        1.2 * zoom,
+                        grip_color,
+                    );
                     if i > 0 {
-                        cp.circle_filled(transform * Pos2::new(gx, gy - offset), 1.2 * zoom, grip_color);
+                        cp.circle_filled(
+                            transform * Pos2::new(gx, gy - offset),
+                            1.2 * zoom,
+                            grip_color,
+                        );
                     }
                     if i > 1 {
-                        cp.circle_filled(transform * Pos2::new(gx - 4.0, gy - 4.0), 1.2 * zoom, grip_color);
+                        cp.circle_filled(
+                            transform * Pos2::new(gx - 4.0, gy - 4.0),
+                            1.2 * zoom,
+                            grip_color,
+                        );
                     }
                 }
             }
