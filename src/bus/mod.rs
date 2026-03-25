@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables)]
 // src/bus/mod.rs
 
 pub mod apc;
@@ -56,6 +57,19 @@ pub struct TerminalBus {
     /// Event subscribers. Each subscriber gets a Sender end.
     /// Subscribers are identified by a unique ID for cleanup.
     subscribers: Vec<(Uuid, EventFilter, mpsc::Sender<BusEvent>)>,
+
+    /// Pending actions that require VoidApp access (spawn, close).
+    /// Polled by VoidApp::update() each frame.
+    pub pending_spawns: Vec<PendingSpawn>,
+    pub pending_closes: Vec<Uuid>,
+}
+
+/// A request to spawn a new terminal, queued for VoidApp to process.
+#[derive(Debug, Clone)]
+pub struct PendingSpawn {
+    pub group_name: Option<String>,
+    pub cwd: Option<String>,
+    pub title: Option<String>,
 }
 
 impl TerminalBus {
@@ -68,6 +82,8 @@ impl TerminalBus {
             terminal_to_group: HashMap::new(),
             context: HashMap::new(),
             subscribers: Vec::new(),
+            pending_spawns: Vec::new(),
+            pending_closes: Vec::new(),
         }
     }
 

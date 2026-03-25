@@ -261,6 +261,7 @@ impl Workspace {
             .any(|r| candidate.expand(half).intersects(r.expand(half)))
     }
 
+    #[allow(dead_code)]
     pub fn close_panel(&mut self, idx: usize) {
         self.close_panel_with_bus(idx, None);
     }
@@ -286,6 +287,7 @@ impl Workspace {
         }
     }
 
+    #[allow(dead_code)]
     pub fn close_focused(&mut self) {
         self.close_focused_with_bus(None);
     }

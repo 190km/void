@@ -326,6 +326,7 @@ impl ContextEntry {
 /// event bus) receive these events. Events are non-blocking — if a
 /// subscriber's channel is full, the event is dropped for that subscriber.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum BusEvent {
     /// A terminal was registered with the bus (new terminal spawned).
     TerminalRegistered { terminal_id: Uuid, title: String },

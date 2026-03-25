@@ -39,6 +39,7 @@ pub struct VoidApp {
     sidebar: Sidebar,
     update_checker: UpdateChecker,
     bus: Arc<Mutex<TerminalBus>>,
+    #[allow(dead_code)]
     bus_port: u16,
 }
 
@@ -366,6 +367,27 @@ impl eframe::App for VoidApp {
 
         if let Some(cmd) = self.handle_shortcuts(ctx) {
             self.execute_command(cmd, ctx, canvas_rect_for_commands);
+        }
+
+        // Process pending bus actions (spawn/close from void-ctl)
+        {
+            let bus_clone = self.bus.clone();
+            let (spawns, closes) = {
+                let mut bus = bus_clone.lock().unwrap();
+                let s = std::mem::take(&mut bus.pending_spawns);
+                let c = std::mem::take(&mut bus.pending_closes);
+                (s, c)
+            };
+            for _spawn in spawns {
+                self.spawn_terminal();
+            }
+            for close_id in closes {
+                let idx = self.ws().panels.iter().position(|p| p.id() == close_id);
+                if let Some(idx) = idx {
+                    let bus = self.bus.clone();
+                    self.ws_mut().close_panel_with_bus(idx, Some(&bus));
+                }
+            }
         }
 
         // Sync titles

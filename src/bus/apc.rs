@@ -591,6 +591,38 @@ pub fn dispatch_bus_method(
             Ok(json!({ "messages": list }))
         }
 
+        "spawn" => {
+            let cwd = params["cwd"].as_str().map(|s| s.to_string());
+            let title = params["title"].as_str().map(|s| s.to_string());
+            let group = params["group"].as_str().map(|s| s.to_string());
+
+            let mut bus = bus
+                .lock()
+                .map_err(|_| (-32007, "lock failed".to_string()))?;
+            bus.pending_spawns.push(super::PendingSpawn {
+                group_name: group,
+                cwd,
+                title,
+            });
+
+            Ok(json!({ "queued": true }))
+        }
+
+        "close" => {
+            let target_str = params["target"]
+                .as_str()
+                .ok_or((-32602, "missing 'target' param".to_string()))?;
+            let target = Uuid::parse_str(target_str)
+                .map_err(|_| (-32602, "invalid 'target' UUID".to_string()))?;
+
+            let mut bus = bus
+                .lock()
+                .map_err(|_| (-32007, "lock failed".to_string()))?;
+            bus.pending_closes.push(target);
+
+            Ok(json!({ "queued": true }))
+        }
+
         _ => Err((-32601, format!("method not found: {}", method))),
     }
 }
