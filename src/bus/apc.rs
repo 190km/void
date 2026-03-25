@@ -158,7 +158,19 @@ pub fn dispatch_bus_method(
             let bus = bus
                 .lock()
                 .map_err(|_| (-32007, "lock failed".to_string()))?;
-            let terminals = bus.list_terminals();
+            let all_terminals = bus.list_terminals();
+            // Filter by caller's workspace — only show terminals in the same workspace
+            let caller_workspace = caller_terminal
+                .and_then(|id| all_terminals.iter().find(|t| t.id == id))
+                .map(|t| t.workspace_id);
+            let terminals: Vec<_> = if let Some(ws_id) = caller_workspace {
+                all_terminals
+                    .iter()
+                    .filter(|t| t.workspace_id == ws_id)
+                    .collect()
+            } else {
+                all_terminals.iter().collect()
+            };
             let list: Vec<Value> = terminals
                 .iter()
                 .map(|t| {
