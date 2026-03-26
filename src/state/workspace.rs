@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::bus::TerminalBus;
 use crate::canvas::config::{DEFAULT_PANEL_HEIGHT, DEFAULT_PANEL_WIDTH, PANEL_GAP};
+use crate::orchestration::OrchestrationSession;
 use crate::panel::CanvasPanel;
 use crate::terminal::panel::TerminalPanel;
 
@@ -20,6 +21,12 @@ pub struct Workspace {
     pub viewport_zoom: f32,
     pub next_z: u32,
     pub next_color: usize,
+
+    /// Whether orchestration mode is active in this workspace.
+    pub orchestration_enabled: bool,
+
+    /// Active orchestration session info (populated when enabled).
+    pub orchestration: Option<OrchestrationSession>,
 }
 
 impl Workspace {
@@ -34,6 +41,8 @@ impl Workspace {
             viewport_zoom: 0.75,
             next_z: 0,
             next_color: 0,
+            orchestration_enabled: false,
+            orchestration: None,
         }
     }
 
@@ -54,6 +63,8 @@ impl Workspace {
             viewport_zoom: state.viewport_zoom,
             next_z: state.next_z,
             next_color: state.next_color,
+            orchestration_enabled: false,
+            orchestration: None,
         };
 
         for panel_state in &state.panels {
@@ -79,12 +90,13 @@ impl Workspace {
     }
 
     /// Snapshot the workspace layout for persistence.
+    /// Kanban and Network panels are not persisted (return None from to_saved).
     pub fn to_saved(&self) -> crate::state::persistence::WorkspaceState {
         crate::state::persistence::WorkspaceState {
             id: self.id.to_string(),
             name: self.name.clone(),
             cwd: self.cwd.clone(),
-            panels: self.panels.iter().map(|p| p.to_saved()).collect(),
+            panels: self.panels.iter().filter_map(|p| p.to_saved()).collect(),
             viewport_pan: [self.viewport_pan.x, self.viewport_pan.y],
             viewport_zoom: self.viewport_zoom,
             next_z: self.next_z,

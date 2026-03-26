@@ -4,6 +4,7 @@ use eframe::egui;
 use egui::{Color32, Pos2, Vec2};
 
 use crate::bus::TerminalBus;
+use crate::canvas::edges::CanvasEdgeOverlay;
 use crate::canvas::viewport::Viewport;
 use crate::command_palette::commands::Command;
 use crate::command_palette::CommandPalette;
@@ -41,6 +42,7 @@ pub struct VoidApp {
     bus: Arc<Mutex<TerminalBus>>,
     #[allow(dead_code)]
     bus_port: u16,
+    edge_overlay: CanvasEdgeOverlay,
 }
 
 impl VoidApp {
@@ -120,6 +122,7 @@ impl VoidApp {
             update_checker: UpdateChecker::new(cc.egui_ctx.clone()),
             bus,
             bus_port,
+            edge_overlay: CanvasEdgeOverlay::new(),
         }
     }
 
@@ -287,6 +290,106 @@ impl VoidApp {
         );
     }
 
+    fn toggle_orchestration(&mut self) {
+        let ws = &mut self.workspaces[self.active_ws];
+        if ws.orchestration_enabled {
+            // Disable: dissolve group, remove kanban/network panels
+            if let Some(ref session) = ws.orchestration {
+                let group_id = session.group_id;
+                if let Ok(mut b) = self.bus.lock() {
+                    b.dissolve_group(group_id);
+                }
+                // Remove kanban and network panels
+                let kanban_id = session.kanban_panel_id;
+                let network_id = session.network_panel_id;
+                ws.panels
+                    .retain(|p| Some(p.id()) != kanban_id && Some(p.id()) != network_id);
+            }
+            ws.orchestration_enabled = false;
+            ws.orchestration = None;
+            self.edge_overlay.enabled = false;
+        } else {
+            // Enable: create group, assign roles, spawn kanban + network
+            let leader_id = ws
+                .panels
+                .iter()
+                .find(|p| p.focused())
+                .or_else(|| ws.panels.first())
+                .map(|p| p.id());
+
+            if let Some(leader) = leader_id {
+                let group_name = format!("team-{}", ws.panels.len());
+                let group_id = {
+                    let mut b = self.bus.lock().unwrap();
+                    match b.create_orchestrated_group(&group_name, leader) {
+                        Ok(gid) => {
+                            // Join all other terminals as workers
+                            let other_ids: Vec<uuid::Uuid> = ws
+                                .panels
+                                .iter()
+                                .filter(|p| p.id() != leader)
+                                .filter(|p| matches!(p, crate::panel::CanvasPanel::Terminal(_)))
+                                .map(|p| p.id())
+                                .collect();
+                            for tid in other_ids {
+                                let _ = b.join_group(tid, gid);
+                            }
+                            gid
+                        }
+                        Err(_) => return,
+                    }
+                };
+
+                // Position kanban to the right of terminal cluster
+                let max_x = ws
+                    .panels
+                    .iter()
+                    .map(|p| p.rect().max.x)
+                    .fold(f32::MIN, f32::max);
+                let min_y = ws
+                    .panels
+                    .iter()
+                    .map(|p| p.rect().min.y)
+                    .fold(f32::MAX, f32::min);
+
+                let kanban_pos = Pos2::new(max_x + 40.0, min_y);
+                let mut kanban = crate::kanban::KanbanPanel::new(kanban_pos, group_id);
+                kanban.z_index = ws.next_z;
+                ws.next_z += 1;
+                let kanban_id = kanban.id;
+
+                let network_pos = Pos2::new(max_x + 40.0, min_y + 520.0);
+                let (sub_id, event_rx) = {
+                    let mut b = self.bus.lock().unwrap();
+                    let filter = crate::bus::types::EventFilter {
+                        group_id: Some(group_id),
+                        ..Default::default()
+                    };
+                    b.subscribe(filter)
+                };
+                let mut network =
+                    crate::network::NetworkPanel::new(network_pos, group_id, sub_id, event_rx);
+                network.z_index = ws.next_z;
+                ws.next_z += 1;
+                let network_id = network.id;
+
+                let mut session = crate::orchestration::OrchestrationSession::new(
+                    group_id,
+                    group_name,
+                    Some(leader),
+                );
+                session.kanban_panel_id = Some(kanban_id);
+                session.network_panel_id = Some(network_id);
+
+                ws.panels.push(crate::panel::CanvasPanel::Kanban(kanban));
+                ws.panels.push(crate::panel::CanvasPanel::Network(network));
+                ws.orchestration_enabled = true;
+                ws.orchestration = Some(session);
+                self.edge_overlay.enabled = true;
+            }
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> Option<Command> {
         if self.command_palette.open {
             return None;
@@ -388,6 +491,37 @@ impl eframe::App for VoidApp {
                     self.ws_mut().close_panel_with_bus(idx, Some(&bus));
                 }
             }
+        }
+
+        // Tick bus tasks and statuses
+        {
+            if let Ok(mut bus) = self.bus.lock() {
+                bus.tick_statuses();
+                bus.tick_tasks();
+            }
+        }
+
+        // Sync kanban and network panels from bus
+        {
+            let bus = self.bus.clone();
+            let guard = bus.lock();
+            if let Ok(ref b) = guard {
+                let ws = &mut self.workspaces[self.active_ws];
+                for panel in &mut ws.panels {
+                    match panel {
+                        crate::panel::CanvasPanel::Kanban(k) => k.sync_from_bus(b),
+                        crate::panel::CanvasPanel::Network(n) => n.sync_nodes(b),
+                        _ => {}
+                    }
+                }
+            }
+            drop(guard);
+        }
+
+        // Tick edge overlay
+        {
+            let dt = ctx.input(|i| i.stable_dt).min(0.1);
+            self.edge_overlay.tick(dt);
         }
 
         // Sync titles
@@ -555,6 +689,32 @@ impl eframe::App for VoidApp {
                             SidebarResponse::ClosePanel(idx) => {
                                 let bus = self.bus.clone();
                                 self.ws_mut().close_panel_with_bus(idx, Some(&bus));
+                            }
+                            SidebarResponse::ToggleOrchestration => {
+                                self.toggle_orchestration();
+                            }
+                            SidebarResponse::SpawnWorker => {
+                                self.spawn_terminal();
+                                // Join the worker to the orchestration group
+                                if let Some(ref session) = self.ws().orchestration {
+                                    let group_id = session.group_id;
+                                    if let Some(panel) = self.ws().panels.last() {
+                                        let panel_id = panel.id();
+                                        if let Ok(mut b) = self.bus.lock() {
+                                            let _ = b.join_group(panel_id, group_id);
+                                        }
+                                    }
+                                }
+                            }
+                            SidebarResponse::ToggleKanban => {
+                                if let Some(ref mut session) = self.ws_mut().orchestration {
+                                    session.kanban_visible = !session.kanban_visible;
+                                }
+                            }
+                            SidebarResponse::ToggleNetwork => {
+                                if let Some(ref mut session) = self.ws_mut().orchestration {
+                                    session.network_visible = !session.network_visible;
+                                }
                             }
                         }
                     }
