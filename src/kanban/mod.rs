@@ -131,14 +131,10 @@ impl KanbanPanel {
         &mut self,
         ui: &mut egui::Ui,
         _transform: egui::emath::TSTransform,
-        screen_clip: Rect,
+        _screen_clip: Rect,
     ) -> KanbanInteraction {
         let panel_rect = self.rect();
-
-        // Frustum cull
-        if !screen_clip.intersects(panel_rect) {
-            return KanbanInteraction::None;
-        }
+        // Culling is handled by the app before calling show().
 
         let painter = ui.painter();
 

@@ -390,13 +390,10 @@ impl NetworkPanel {
         &mut self,
         ui: &mut egui::Ui,
         _transform: egui::emath::TSTransform,
-        screen_clip: Rect,
+        _screen_clip: Rect,
     ) -> NetworkInteraction {
         let panel_rect = self.rect();
-
-        if !screen_clip.intersects(panel_rect) {
-            return NetworkInteraction::None;
-        }
+        // Culling is handled by the app before calling show().
 
         let dt = ui.input(|i| i.stable_dt).min(0.1);
 
