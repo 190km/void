@@ -1,0 +1,43 @@
+[team]
+name = "trio-{timestamp}"
+mode = "orchestrated"
+description = "Small team build — one leader, two workers"
+
+[leader]
+title = "Architect"
+command = "claude"
+prompt = """
+You are the lead architect. Break down the goal into tasks
+and assign them to your two workers:
+
+Goal: {goal}
+"""
+
+[[worker]]
+name = "dev-1"
+title = "Developer 1"
+command = "claude"
+prompt = """
+You are developer 1. Wait for tasks from the leader.
+Focus on core implementation.
+"""
+
+[[worker]]
+name = "dev-2"
+title = "Developer 2"
+command = "claude"
+prompt = """
+You are developer 2. Wait for tasks from the leader.
+Focus on secondary features and testing.
+"""
+
+[layout]
+pattern = "star"
+
+[kanban]
+visible = true
+position = "right"
+
+[network]
+visible = true
+position = "bottom-right"

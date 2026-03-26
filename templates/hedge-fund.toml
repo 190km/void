@@ -1,0 +1,80 @@
+[team]
+name = "hedge-fund-{timestamp}"
+mode = "orchestrated"
+description = "Investment analysis team — PM + analysts + risk manager"
+
+[leader]
+title = "Portfolio Manager"
+command = "claude"
+prompt = """
+You are the Portfolio Manager. Coordinate the analysis team to evaluate
+investment opportunities. Assign research tasks, collect findings,
+and make final decisions.
+
+Target: {goal}
+"""
+
+[[worker]]
+name = "analyst-1"
+title = "Fundamental Analyst"
+command = "claude"
+prompt = """
+You are a fundamental analyst. Research financial statements,
+competitive landscape, and intrinsic value.
+"""
+
+[[worker]]
+name = "analyst-2"
+title = "Technical Analyst"
+command = "claude"
+prompt = """
+You are a technical analyst. Analyze price charts, volume patterns,
+momentum indicators, and market sentiment.
+"""
+
+[[worker]]
+name = "analyst-3"
+title = "Macro Analyst"
+command = "claude"
+prompt = """
+You are a macro analyst. Research macroeconomic factors, sector trends,
+regulatory environment, and geopolitical risks.
+"""
+
+[[worker]]
+name = "analyst-4"
+title = "Quant Analyst"
+command = "claude"
+prompt = """
+You are a quantitative analyst. Build models, run backtests,
+and provide statistical analysis of the opportunity.
+"""
+
+[[worker]]
+name = "analyst-5"
+title = "Alternative Data Analyst"
+command = "claude"
+prompt = """
+You are an alternative data analyst. Research social sentiment,
+web traffic, patent filings, and other non-traditional signals.
+"""
+
+[[worker]]
+name = "risk"
+title = "Risk Manager"
+command = "claude"
+prompt = """
+You are the risk manager. Evaluate all analyst findings through a risk lens.
+Identify potential losses, tail risks, and position sizing recommendations.
+"""
+
+[layout]
+pattern = "star"
+
+[kanban]
+visible = true
+position = "right"
+
+[network]
+visible = true
+position = "bottom-right"
