@@ -47,6 +47,9 @@ pub struct VoidApp {
         uuid::Uuid,
         std::sync::mpsc::Receiver<crate::bus::types::BusEvent>,
     )>,
+    /// Deferred prompt injections: (terminal_id, prompt_text, inject_after_time).
+    /// Waits for the agent CLI to be ready before pasting.
+    pending_injections: Vec<(uuid::Uuid, String, std::time::Instant)>,
 }
 
 impl VoidApp {
@@ -128,6 +131,7 @@ impl VoidApp {
             bus_port,
             edge_overlay: CanvasEdgeOverlay::new(),
             edge_subscription: None,
+            pending_injections: Vec::new(),
         }
     }
 
@@ -321,22 +325,31 @@ impl VoidApp {
     }
 
     fn toggle_orchestration(&mut self) {
-        let ws = &mut self.workspaces[self.active_ws];
-        if ws.orchestration_enabled {
+        let is_enabled = self.workspaces[self.active_ws].orchestration_enabled;
+        if is_enabled {
             // Disable: dissolve group, remove kanban/network panels
-            if let Some(ref session) = ws.orchestration {
-                let group_id = session.group_id;
+            let group_id = self.workspaces[self.active_ws]
+                .orchestration
+                .as_ref()
+                .map(|s| s.group_id);
+            if let Some(gid) = group_id {
                 if let Ok(mut b) = self.bus.lock() {
-                    b.dissolve_group(group_id);
+                    b.dissolve_group(gid);
                 }
-                // Remove kanban and network panels
-                let kanban_id = session.kanban_panel_id;
-                let network_id = session.network_panel_id;
-                ws.panels
-                    .retain(|p| Some(p.id()) != kanban_id && Some(p.id()) != network_id);
             }
-            ws.orchestration_enabled = false;
-            ws.orchestration = None;
+            let kanban_id = self.workspaces[self.active_ws]
+                .orchestration
+                .as_ref()
+                .and_then(|s| s.kanban_panel_id);
+            let network_id = self.workspaces[self.active_ws]
+                .orchestration
+                .as_ref()
+                .and_then(|s| s.network_panel_id);
+            self.workspaces[self.active_ws]
+                .panels
+                .retain(|p| Some(p.id()) != kanban_id && Some(p.id()) != network_id);
+            self.workspaces[self.active_ws].orchestration_enabled = false;
+            self.workspaces[self.active_ws].orchestration = None;
             self.edge_overlay.enabled = false;
             // Unsubscribe edge overlay from bus events
             if let Some((sub_id, _)) = self.edge_subscription.take() {
@@ -345,166 +358,128 @@ impl VoidApp {
                 }
             }
         } else {
-            // Enable: create group, assign roles, spawn kanban + network
-            let leader_id = ws
-                .panels
-                .iter()
-                .find(|p| p.focused())
-                .or_else(|| ws.panels.first())
-                .map(|p| p.id());
+            // Enable orchestration: spawn leader terminal + launch claude automatically
+            //
+            // Flow (like ClawTeam):
+            // 1. Spawn a new terminal panel for the leader
+            // 2. Launch "claude" in it
+            // 3. Wait ~4s for Claude to start
+            // 4. Inject the leader prompt (deferred)
+            // 5. Any existing terminals join as workers
 
-            if let Some(leader) = leader_id {
-                let group_name = format!("team-{}", ws.panels.len());
-                let group_id = {
-                    let mut b = self.bus.lock().unwrap();
-                    match b.create_orchestrated_group(&group_name, leader) {
-                        Ok(gid) => {
-                            // Join all other terminals as workers
-                            let other_ids: Vec<uuid::Uuid> = ws
-                                .panels
-                                .iter()
-                                .filter(|p| p.id() != leader)
-                                .filter(|p| matches!(p, crate::panel::CanvasPanel::Terminal(_)))
-                                .map(|p| p.id())
-                                .collect();
-                            for tid in other_ids {
-                                let _ = b.join_group(tid, gid);
-                            }
-                            gid
+            // Spawn leader terminal
+            self.spawn_terminal();
+            let leader = match self.workspaces[self.active_ws].panels.last() {
+                Some(p) => p.id(),
+                None => return,
+            };
+
+            let group_name = format!("team-{}", self.workspaces[self.active_ws].panels.len());
+            let group_id = {
+                let mut b = self.bus.lock().unwrap();
+                match b.create_orchestrated_group(&group_name, leader) {
+                    Ok(gid) => {
+                        // Join existing terminals as workers
+                        let other_ids: Vec<uuid::Uuid> = self.workspaces[self.active_ws]
+                            .panels
+                            .iter()
+                            .filter(|p| p.id() != leader)
+                            .filter(|p| matches!(p, crate::panel::CanvasPanel::Terminal(_)))
+                            .map(|p| p.id())
+                            .collect();
+                        for tid in other_ids {
+                            let _ = b.join_group(tid, gid);
                         }
-                        Err(_) => return,
+                        gid
                     }
-                };
+                    Err(_) => return,
+                }
+            };
 
-                // Position kanban to the right of terminal cluster
-                let max_x = ws
-                    .panels
-                    .iter()
-                    .map(|p| p.rect().max.x)
-                    .fold(f32::MIN, f32::max);
-                let min_y = ws
-                    .panels
-                    .iter()
-                    .map(|p| p.rect().min.y)
-                    .fold(f32::MAX, f32::min);
-
-                let kanban_pos = Pos2::new(max_x + 40.0, min_y);
-                let mut kanban = crate::kanban::KanbanPanel::new(kanban_pos, group_id);
-                kanban.z_index = ws.next_z;
-                ws.next_z += 1;
-                let kanban_id = kanban.id;
-
-                let network_pos = Pos2::new(max_x + 40.0, min_y + 520.0);
-                let (sub_id, event_rx) = {
-                    let mut b = self.bus.lock().unwrap();
-                    let filter = crate::bus::types::EventFilter {
-                        group_id: Some(group_id),
-                        ..Default::default()
-                    };
-                    b.subscribe(filter)
-                };
-                let mut network =
-                    crate::network::NetworkPanel::new(network_pos, group_id, sub_id, event_rx);
-                network.z_index = ws.next_z;
-                ws.next_z += 1;
-                let network_id = network.id;
-
-                let mut session = crate::orchestration::OrchestrationSession::new(
-                    group_id,
-                    group_name.clone(),
-                    Some(leader),
-                );
-                session.kanban_panel_id = Some(kanban_id);
-                session.network_panel_id = Some(network_id);
-
-                ws.panels.push(crate::panel::CanvasPanel::Kanban(kanban));
-                ws.panels.push(crate::panel::CanvasPanel::Network(network));
-                ws.orchestration_enabled = true;
-                ws.orchestration = Some(session);
-                self.edge_overlay.enabled = true;
-
-                // Subscribe edge overlay to bus events
-                let (sub_id, rx) = {
-                    let mut b = self.bus.lock().unwrap();
-                    b.subscribe(crate::bus::types::EventFilter::default())
-                };
-                self.edge_subscription = Some((sub_id, rx));
-
-                // Inject coordination prompts into all terminals
-                self.inject_orchestration_prompts(group_id, &group_name, leader);
+            // Launch claude in the leader terminal
+            {
+                let mut b = self.bus.lock().unwrap();
+                let _ = b.inject_bytes(leader, b"claude\r", None);
             }
-        }
-    }
 
-    /// Inject coordination prompts directly into terminal PTY input.
-    ///
-    /// If an agent (Claude) is already running in the terminal, the prompt
-    /// is injected as text that the agent reads as user input — exactly like
-    /// ClawTeam's tmux paste-buffer approach.
-    ///
-    /// Also writes the protocol to a file so agents can re-read it.
-    fn inject_orchestration_prompts(
-        &self,
-        group_id: uuid::Uuid,
-        team_name: &str,
-        leader_id: uuid::Uuid,
-    ) {
-        let bus_port = self.bus_port;
-        let mut bus = self.bus.lock().unwrap();
+            // Build leader prompt and defer injection (~4s for Claude to start)
+            let workers: Vec<(uuid::Uuid, String)> = Vec::new(); // no workers yet
+            let prompt = crate::orchestration::prompt::leader_prompt(
+                leader,
+                &group_name,
+                group_id,
+                &workers,
+                self.bus_port,
+            );
 
-        // Collect group members info
-        let group_info = bus.get_group(group_id);
-        let members: Vec<(uuid::Uuid, crate::bus::types::TerminalRole, String)> = group_info
-            .map(|g| {
-                g.members
-                    .iter()
-                    .map(|m| (m.terminal_id, m.role, m.title.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Build worker list for leader prompt
-        let workers: Vec<(uuid::Uuid, String)> = members
-            .iter()
-            .filter(|(_, r, _)| *r == crate::bus::types::TerminalRole::Worker)
-            .map(|(id, _, title)| (*id, title.clone()))
-            .collect();
-
-        // Write protocol files to disk (so agents can re-read)
-        let protocol_dir = std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
-        std::fs::create_dir_all(&protocol_dir).ok();
-
-        for (tid, role, _title) in &members {
-            let prompt = match role {
-                crate::bus::types::TerminalRole::Orchestrator => {
-                    crate::orchestration::prompt::leader_prompt(
-                        *tid, team_name, group_id, &workers, bus_port,
-                    )
-                }
-                crate::bus::types::TerminalRole::Worker => {
-                    crate::orchestration::prompt::worker_prompt(
-                        *tid, team_name, group_id, leader_id, bus_port,
-                    )
-                }
-                _ => continue,
-            };
-
-            let role_str = match role {
-                crate::bus::types::TerminalRole::Orchestrator => "leader",
-                crate::bus::types::TerminalRole::Worker => "worker",
-                _ => "peer",
-            };
-
-            // Write to file for future reference
-            let protocol_path = protocol_dir.join(format!("{role_str}-{tid}.md"));
+            // Write protocol file to disk
+            let protocol_dir = std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
+            std::fs::create_dir_all(&protocol_dir).ok();
+            let protocol_path = protocol_dir.join(format!("leader-{leader}.md"));
             std::fs::write(&protocol_path, &prompt).ok();
 
-            // Inject the prompt directly into the PTY as text input.
-            // If Claude is running, it reads this as a user message.
-            // If a shell is running, it appears as pasted text (harmless comments).
-            let _ = bus.inject_bytes(*tid, prompt.as_bytes(), None);
-            // Send Enter twice to confirm (like ClawTeam's double-Enter)
-            let _ = bus.inject_bytes(*tid, b"\r\r", None);
+            // Defer prompt injection: wait 4 seconds for Claude CLI to be ready
+            let inject_at = std::time::Instant::now() + std::time::Duration::from_secs(4);
+            self.pending_injections.push((leader, prompt, inject_at));
+
+            // Position kanban to the right of terminal cluster
+            let aws = self.active_ws;
+            let max_x = self.workspaces[aws]
+                .panels
+                .iter()
+                .map(|p| p.rect().max.x)
+                .fold(f32::MIN, f32::max);
+            let min_y = self.workspaces[aws]
+                .panels
+                .iter()
+                .map(|p| p.rect().min.y)
+                .fold(f32::MAX, f32::min);
+
+            let kanban_pos = Pos2::new(max_x + 40.0, min_y);
+            let mut kanban = crate::kanban::KanbanPanel::new(kanban_pos, group_id);
+            kanban.z_index = self.workspaces[aws].next_z;
+            self.workspaces[aws].next_z += 1;
+            let kanban_id = kanban.id;
+
+            let network_pos = Pos2::new(max_x + 40.0, min_y + 520.0);
+            let (sub_id, event_rx) = {
+                let mut b = self.bus.lock().unwrap();
+                let filter = crate::bus::types::EventFilter {
+                    group_id: Some(group_id),
+                    ..Default::default()
+                };
+                b.subscribe(filter)
+            };
+            let mut network =
+                crate::network::NetworkPanel::new(network_pos, group_id, sub_id, event_rx);
+            network.z_index = self.workspaces[aws].next_z;
+            self.workspaces[aws].next_z += 1;
+            let network_id = network.id;
+
+            let mut session = crate::orchestration::OrchestrationSession::new(
+                group_id,
+                group_name.clone(),
+                Some(leader),
+            );
+            session.kanban_panel_id = Some(kanban_id);
+            session.network_panel_id = Some(network_id);
+
+            self.workspaces[aws]
+                .panels
+                .push(crate::panel::CanvasPanel::Kanban(kanban));
+            self.workspaces[aws]
+                .panels
+                .push(crate::panel::CanvasPanel::Network(network));
+            self.workspaces[aws].orchestration_enabled = true;
+            self.workspaces[aws].orchestration = Some(session);
+            self.edge_overlay.enabled = true;
+
+            // Subscribe edge overlay to bus events
+            let (sub_id, rx) = {
+                let mut b = self.bus.lock().unwrap();
+                b.subscribe(crate::bus::types::EventFilter::default())
+            };
+            self.edge_subscription = Some((sub_id, rx));
         }
     }
 
@@ -639,12 +614,10 @@ impl eframe::App for VoidApp {
                             let protocol_path = protocol_dir.join(format!("worker-{pid}.md"));
                             std::fs::write(&protocol_path, &prompt).ok();
 
-                            // Inject prompt directly into PTY.
-                            // The prompt gets buffered; when claude starts, it reads it.
-                            if let Ok(mut b) = bus_clone.lock() {
-                                let _ = b.inject_bytes(pid, prompt.as_bytes(), None);
-                                let _ = b.inject_bytes(pid, b"\r\r", None);
-                            }
+                            // Defer prompt injection: wait 4s for Claude to start
+                            let inject_at =
+                                std::time::Instant::now() + std::time::Duration::from_secs(4);
+                            self.pending_injections.push((pid, prompt, inject_at));
                         }
                     }
                 }
@@ -663,6 +636,29 @@ impl eframe::App for VoidApp {
             if let Ok(mut bus) = self.bus.lock() {
                 bus.tick_statuses();
                 bus.tick_tasks();
+            }
+        }
+
+        // Process deferred prompt injections (wait for agent CLI to be ready)
+        {
+            let now = std::time::Instant::now();
+            let ready: Vec<(uuid::Uuid, String)> = self
+                .pending_injections
+                .iter()
+                .filter(|(_, _, when)| now >= *when)
+                .map(|(id, prompt, _)| (*id, prompt.clone()))
+                .collect();
+
+            if !ready.is_empty() {
+                self.pending_injections.retain(|(_, _, when)| now < *when);
+
+                if let Ok(mut bus) = self.bus.lock() {
+                    for (tid, prompt) in ready {
+                        // Inject prompt text + Enter to submit to the agent
+                        let _ = bus.inject_bytes(tid, prompt.as_bytes(), None);
+                        let _ = bus.inject_bytes(tid, b"\r", None);
+                    }
+                }
             }
         }
 
