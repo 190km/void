@@ -595,6 +595,7 @@ pub fn dispatch_bus_method(
             let cwd = params["cwd"].as_str().map(|s| s.to_string());
             let title = params["title"].as_str().map(|s| s.to_string());
             let group = params["group"].as_str().map(|s| s.to_string());
+            let command = params["command"].as_str().map(|s| s.to_string());
 
             let mut bus = bus
                 .lock()
@@ -603,6 +604,7 @@ pub fn dispatch_bus_method(
                 group_name: group,
                 cwd,
                 title,
+                command,
             });
 
             Ok(json!({ "queued": true }))

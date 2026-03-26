@@ -763,23 +763,49 @@ fn cmd_task(client: &mut VoidClient, args: &[String]) {
     }
 }
 
-fn cmd_spawn(client: &mut VoidClient, _args: &[String]) {
-    // If we're in a team, pass the group name so the new terminal auto-joins
+fn cmd_spawn(client: &mut VoidClient, args: &[String]) {
+    // Parse optional flags
+    let mut command: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--command" | "-c" if i + 1 < args.len() => {
+                command = Some(args[i + 1].clone());
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
     let group = env::var("VOID_TEAM_NAME").ok();
     let mut params = json!({"count": 1});
-    if let Some(g) = group {
-        params
-            .as_object_mut()
-            .unwrap()
-            .insert("group".into(), json!(g));
+    let map = params.as_object_mut().unwrap();
+
+    if let Some(g) = &group {
+        map.insert("group".into(), json!(g));
     }
+
+    // Default: launch "claude" if in a team and no --command specified
+    let cmd = command.or_else(|| {
+        if group.is_some() {
+            Some("claude".to_string())
+        } else {
+            None
+        }
+    });
+    if let Some(c) = cmd {
+        map.insert("command".into(), json!(c));
+    }
+
     let result = client.call("spawn", params).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         process::exit(1);
     });
-    println!("Spawned new terminal.");
-    if result["queued"].as_bool() == Some(true) {
-        println!("(terminal will appear momentarily)");
+    println!("Spawned new worker terminal.");
+    if result["queued"].as_bool() == Some(true) && group.is_some() {
+        println!("(worker will join the team and receive instructions)");
     }
 }
 

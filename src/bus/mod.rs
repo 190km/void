@@ -78,6 +78,8 @@ pub struct PendingSpawn {
     pub group_name: Option<String>,
     pub cwd: Option<String>,
     pub title: Option<String>,
+    /// Command to execute after spawn (e.g. "claude" to launch an agent).
+    pub command: Option<String>,
 }
 
 impl TerminalBus {

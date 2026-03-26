@@ -99,19 +99,29 @@ void-ctl send <WORKER_ID> "cargo test"
 
 ## Spawning New Workers
 ```bash
-# Spawn a new worker terminal (auto-joins your team)
+# Spawn a new worker with Claude running in it (auto-joins your team, auto-receives worker prompt)
 void-ctl spawn
+
+# Spawn with a specific agent command
+void-ctl spawn --command "codex"
+
+# After spawn, use void-ctl list to find the new worker's terminal ID
+void-ctl list
 ```
+**IMPORTANT**: `void-ctl spawn` automatically launches `claude` in the new terminal and injects
+the worker coordination protocol. The new worker will immediately be ready to receive tasks.
+You do NOT need to manually start anything in the spawned terminal.
 
 ## Leader Workflow
-1. First, create ALL tasks before workers start (so dependencies are clear)
-2. Assign each task to the best worker: `void-ctl task create "..." --assign <ID>`
-3. Workers will see their tasks and start working automatically
-4. Monitor with: `void-ctl task list` and `void-ctl read <WORKER_ID>`
-5. When blocked, message workers: `void-ctl message send <ID> "..."`
-6. Share schemas/configs via context: `void-ctl context set key value`
-7. Wait for completion: `void-ctl task wait --all`
-8. Read results: `void-ctl task list` (check result field)
+1. **Spawn workers if needed**: `void-ctl spawn` (creates a new Claude worker automatically)
+2. After spawning, run `void-ctl list` to get worker terminal IDs
+3. Create ALL tasks: `void-ctl task create "..." --assign <WORKER_ID>`
+4. Workers automatically see their tasks and start working
+5. Monitor with: `void-ctl task list` and `void-ctl read <WORKER_ID> --lines 50`
+6. When blocked, message workers: `void-ctl message send <ID> "..."`
+7. Share schemas/configs via context: `void-ctl context set key value`
+8. Wait for completion: `void-ctl task wait --all`
+9. Read results: `void-ctl task list` (check result field)
 
 ## Rules
 - Always create tasks BEFORE assigning work (so the kanban board shows them)

@@ -608,12 +608,57 @@ impl eframe::App for VoidApp {
             };
             for spawn_req in spawns {
                 self.spawn_terminal();
-                // If the spawn request includes a group, auto-join the new terminal
-                if let Some(ref group_name) = spawn_req.group_name {
-                    if let Some(panel) = self.ws().panels.last() {
-                        let panel_id = panel.id();
+                let panel_id = self.ws().panels.last().map(|p| p.id());
+
+                if let Some(pid) = panel_id {
+                    // Auto-join group if requested
+                    if let Some(ref group_name) = spawn_req.group_name {
                         if let Ok(mut b) = bus_clone.lock() {
-                            let _ = b.join_group_by_name(panel_id, group_name);
+                            let _ = b.join_group_by_name(pid, group_name);
+                        }
+                    }
+
+                    // Execute command in the new terminal (e.g. "claude")
+                    if let Some(ref command) = spawn_req.command {
+                        // Small delay to let the shell initialize
+                        let cmd_with_enter = format!("{}\r", command);
+                        if let Ok(mut b) = bus_clone.lock() {
+                            let _ = b.inject_bytes(pid, cmd_with_enter.as_bytes(), None);
+                        }
+                    }
+
+                    // If in a group, inject worker coordination prompt
+                    if spawn_req.group_name.is_some() {
+                        if let Some(ref session) = self.ws().orchestration {
+                            let leader_id = session.leader_id.unwrap_or(pid);
+                            let team_name = session.group_name.clone();
+                            let group_id = session.group_id;
+                            let bus_port = self.bus_port;
+
+                            // Inject env vars + worker prompt
+                            let env_cmd = format!(
+                                "export VOID_TEAM_NAME={team_name} VOID_ROLE=worker VOID_GROUP_ID={group_id}\r"
+                            );
+                            if let Ok(mut b) = bus_clone.lock() {
+                                let _ = b.inject_bytes(pid, env_cmd.as_bytes(), None);
+                            }
+
+                            let prompt = crate::orchestration::prompt::worker_prompt(
+                                pid, &team_name, group_id, leader_id, bus_port,
+                            );
+                            let protocol_dir = format!("/tmp/void-orchestration-{group_id}");
+                            let write_cmd = format!(
+                                "mkdir -p {protocol_dir} 2>/dev/null && cat > {protocol_dir}/worker-{pid}.md << 'VOID_PROTOCOL_END'\n{prompt}VOID_PROTOCOL_END\r"
+                            );
+                            if let Ok(mut b) = bus_clone.lock() {
+                                let _ = b.inject_bytes(pid, write_cmd.as_bytes(), None);
+                            }
+                            let export_cmd = format!(
+                                "export VOID_ORCHESTRATION_PROTOCOL={protocol_dir}/worker-{pid}.md\r"
+                            );
+                            if let Ok(mut b) = bus_clone.lock() {
+                                let _ = b.inject_bytes(pid, export_cmd.as_bytes(), None);
+                            }
                         }
                     }
                 }
