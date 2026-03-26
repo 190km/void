@@ -480,7 +480,7 @@ pub fn dispatch_bus_method(
                 .ok_or((-32602, "missing 'value' param".to_string()))?;
             let ttl = params["ttl_secs"]
                 .as_f64()
-                .map(|s| std::time::Duration::from_secs_f64(s));
+                .map(std::time::Duration::from_secs_f64);
             let caller = caller_terminal.ok_or((-32602, "no caller terminal".to_string()))?;
 
             let mut bus = bus
@@ -621,6 +621,255 @@ pub fn dispatch_bus_method(
             bus.pending_closes.push(target);
 
             Ok(json!({ "queued": true }))
+        }
+
+        // ── Task Methods ─────────────────────────────────────────
+        "task.create" => {
+            let subject = params["subject"]
+                .as_str()
+                .ok_or((-32602, "missing 'subject' param".to_string()))?;
+            let group_id_str = params["group_id"].as_str();
+            let caller = caller_terminal.ok_or((-32602, "no caller terminal".to_string()))?;
+
+            let mut bus = bus
+                .lock()
+                .map_err(|_| (-32007, "lock failed".to_string()))?;
+
+            // Resolve group_id: from param, or from caller's group
+            let group_id = if let Some(gid) = group_id_str {
+                Uuid::parse_str(gid).map_err(|_| (-32602, "invalid group_id UUID".to_string()))?
+            } else if let Some(gn) = params["group"].as_str() {
+                bus.get_group_by_name(gn)
+                    .map(|g| g.id)
+                    .ok_or((-32002, format!("group not found: {}", gn)))?
+            } else {
+                // Use caller's group
+                bus.list_groups()
+                    .iter()
+                    .find(|g| g.members.iter().any(|m| m.terminal_id == caller))
+                    .map(|g| g.id)
+                    .ok_or((-32002, "caller is not in any group".to_string()))?
+            };
+
+            let blocked_by: Vec<Uuid> = params["blocked_by"]
+                .as_str()
+                .map(|s| {
+                    s.split(',')
+                        .filter_map(|id| Uuid::parse_str(id.trim()).ok())
+                        .collect()
+                })
+                .or_else(|| {
+                    params["blocked_by"].as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .filter_map(|s| Uuid::parse_str(s).ok())
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+
+            let owner = params["owner"]
+                .as_str()
+                .and_then(|s| Uuid::parse_str(s).ok());
+            let priority = params["priority"].as_u64().unwrap_or(100) as u8;
+            let tags: Vec<String> = params["tags"]
+                .as_str()
+                .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
+                .or_else(|| {
+                    params["tags"].as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+            let description = params["description"].as_str().unwrap_or("");
+
+            let task_id = bus
+                .task_create(
+                    subject,
+                    group_id,
+                    caller,
+                    blocked_by,
+                    owner,
+                    priority,
+                    tags,
+                    description,
+                )
+                .map_err(|e| (-32000, e.to_string()))?;
+
+            Ok(json!({
+                "task_id": task_id.to_string(),
+                "subject": subject,
+            }))
+        }
+
+        "task.update_status" => {
+            let task_id_str = params["task_id"]
+                .as_str()
+                .ok_or((-32602, "missing 'task_id' param".to_string()))?;
+            let task_id = Uuid::parse_str(task_id_str)
+                .map_err(|_| (-32602, "invalid task_id UUID".to_string()))?;
+            let status_str = params["status"]
+                .as_str()
+                .ok_or((-32602, "missing 'status' param".to_string()))?;
+            let status = super::task::TaskStatus::from_str(status_str)
+                .ok_or((-32602, format!("invalid status: {}", status_str)))?;
+            let result = params["result"].as_str().map(|s| s.to_string());
+            let caller = caller_terminal.ok_or((-32602, "no caller terminal".to_string()))?;
+
+            let mut bus = bus
+                .lock()
+                .map_err(|_| (-32007, "lock failed".to_string()))?;
+            bus.task_update_status(task_id, status, caller, result)
+                .map_err(|e| (-32000, e.to_string()))?;
+
+            Ok(json!({ "ok": true }))
+        }
+
+        "task.assign" => {
+            let task_id_str = params["task_id"]
+                .as_str()
+                .ok_or((-32602, "missing 'task_id' param".to_string()))?;
+            let task_id = Uuid::parse_str(task_id_str)
+                .map_err(|_| (-32602, "invalid task_id UUID".to_string()))?;
+            let owner_str = params["owner"]
+                .as_str()
+                .ok_or((-32602, "missing 'owner' param".to_string()))?;
+            let owner = Uuid::parse_str(owner_str)
+                .map_err(|_| (-32602, "invalid owner UUID".to_string()))?;
+            let caller = caller_terminal.ok_or((-32602, "no caller terminal".to_string()))?;
+
+            let mut bus = bus
+                .lock()
+                .map_err(|_| (-32007, "lock failed".to_string()))?;
+            bus.task_assign(task_id, owner, caller)
+                .map_err(|e| (-32000, e.to_string()))?;
+
+            Ok(json!({ "ok": true }))
+        }
+
+        "task.unassign" => {
+            let task_id_str = params["task_id"]
+                .as_str()
+                .ok_or((-32602, "missing 'task_id' param".to_string()))?;
+            let task_id = Uuid::parse_str(task_id_str)
+                .map_err(|_| (-32602, "invalid task_id UUID".to_string()))?;
+            let caller = caller_terminal.ok_or((-32602, "no caller terminal".to_string()))?;
+
+            let mut bus = bus
+                .lock()
+                .map_err(|_| (-32007, "lock failed".to_string()))?;
+            bus.task_unassign(task_id, caller)
+                .map_err(|e| (-32000, e.to_string()))?;
+
+            Ok(json!({ "ok": true }))
+        }
+
+        "task.delete" => {
+            let task_id_str = params["task_id"]
+                .as_str()
+                .ok_or((-32602, "missing 'task_id' param".to_string()))?;
+            let task_id = Uuid::parse_str(task_id_str)
+                .map_err(|_| (-32602, "invalid task_id UUID".to_string()))?;
+            let caller = caller_terminal.ok_or((-32602, "no caller terminal".to_string()))?;
+
+            let mut bus = bus
+                .lock()
+                .map_err(|_| (-32007, "lock failed".to_string()))?;
+            bus.task_delete(task_id, caller)
+                .map_err(|e| (-32000, e.to_string()))?;
+
+            Ok(json!({ "ok": true }))
+        }
+
+        "task.list" => {
+            let bus = bus
+                .lock()
+                .map_err(|_| (-32007, "lock failed".to_string()))?;
+
+            // Resolve group_id
+            let group_id = if let Some(gid) = params["group_id"].as_str() {
+                Uuid::parse_str(gid).map_err(|_| (-32602, "invalid group_id UUID".to_string()))?
+            } else if let Some(gn) = params["group"].as_str() {
+                bus.get_group_by_name(gn)
+                    .map(|g| g.id)
+                    .ok_or((-32002, format!("group not found: {}", gn)))?
+            } else {
+                let caller = caller_terminal.ok_or((-32602, "no caller terminal".to_string()))?;
+                bus.list_groups()
+                    .iter()
+                    .find(|g| g.members.iter().any(|m| m.terminal_id == caller))
+                    .map(|g| g.id)
+                    .ok_or((-32002, "caller is not in any group".to_string()))?
+            };
+
+            let status_filter = params["status"]
+                .as_str()
+                .and_then(super::task::TaskStatus::from_str);
+            let owner_filter = params["owner"].as_str().and_then(|s| {
+                if s == "me" {
+                    caller_terminal
+                } else {
+                    Uuid::parse_str(s).ok()
+                }
+            });
+
+            let tasks = bus.task_list(group_id, status_filter, owner_filter);
+            let list: Vec<Value> = tasks
+                .iter()
+                .map(|t| {
+                    json!({
+                        "id": t.id.to_string(),
+                        "subject": t.subject,
+                        "status": t.status,
+                        "owner": t.owner.map(|o| o.to_string()),
+                        "owner_title": t.owner_title,
+                        "priority": t.priority,
+                        "tags": t.tags,
+                        "blocked_by": t.blocked_by.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                        "blocking": t.blocking.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                        "result": t.result,
+                        "elapsed_ms": t.elapsed_ms,
+                    })
+                })
+                .collect();
+
+            Ok(json!({ "tasks": list }))
+        }
+
+        "task.get" => {
+            let task_id_str = params["task_id"]
+                .as_str()
+                .ok_or((-32602, "missing 'task_id' param".to_string()))?;
+            let task_id = Uuid::parse_str(task_id_str)
+                .map_err(|_| (-32602, "invalid task_id UUID".to_string()))?;
+
+            let bus = bus
+                .lock()
+                .map_err(|_| (-32007, "lock failed".to_string()))?;
+            let info = bus
+                .task_get(task_id)
+                .ok_or((-32000, format!("task not found: {}", task_id)))?;
+
+            Ok(json!({
+                "id": info.id.to_string(),
+                "subject": info.subject,
+                "description": info.description,
+                "status": info.status,
+                "owner": info.owner.map(|o| o.to_string()),
+                "owner_title": info.owner_title,
+                "group_id": info.group_id.to_string(),
+                "group_name": info.group_name,
+                "created_by": info.created_by.to_string(),
+                "blocked_by": info.blocked_by.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                "blocking": info.blocking.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                "priority": info.priority,
+                "tags": info.tags,
+                "result": info.result,
+                "elapsed_ms": info.elapsed_ms,
+            }))
         }
 
         _ => Err((-32601, format!("method not found: {}", method))),

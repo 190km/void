@@ -39,6 +39,7 @@ fn main() {
         "group" => cmd_group(&mut client, &args[2..]),
         "context" => cmd_context(&mut client, &args[2..]),
         "message" => cmd_message(&mut client, &args[2..]),
+        "task" => cmd_task(&mut client, &args[2..]),
         "spawn" => cmd_spawn(&mut client, &args[2..]),
         "close" => cmd_close(&mut client, &args[2..]),
         "help" | "--help" | "-h" => print_usage(),
@@ -447,6 +448,246 @@ fn cmd_message(client: &mut VoidClient, args: &[String]) {
     }
 }
 
+fn cmd_task(client: &mut VoidClient, args: &[String]) {
+    if args.is_empty() {
+        eprintln!("usage: void-ctl task <create|list|update|assign|unassign|delete|get>");
+        process::exit(1);
+    }
+    match args[0].as_str() {
+        "create" => {
+            if args.len() < 2 {
+                eprintln!("usage: void-ctl task create <subject> [options]");
+                process::exit(1);
+            }
+            let subject = &args[1];
+            let mut params = json!({"subject": subject});
+            let map = params.as_object_mut().unwrap();
+
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--group" if i + 1 < args.len() => {
+                        map.insert("group".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    "--blocked-by" if i + 1 < args.len() => {
+                        map.insert("blocked_by".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    "--assign" if i + 1 < args.len() => {
+                        map.insert("owner".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    "--assign-self" => {
+                        let tid = env::var("VOID_TERMINAL_ID").unwrap_or_default();
+                        map.insert("owner".into(), json!(tid));
+                        i += 1;
+                    }
+                    "--priority" if i + 1 < args.len() => {
+                        let p: u64 = args[i + 1].parse().unwrap_or(100);
+                        map.insert("priority".into(), json!(p));
+                        i += 2;
+                    }
+                    "--tag" if i + 1 < args.len() => {
+                        map.insert("tags".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    "--description" if i + 1 < args.len() => {
+                        map.insert("description".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+
+            let result = client.call("task.create", params).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                process::exit(1);
+            });
+            println!(
+                "Created task {}: {}",
+                result["task_id"].as_str().unwrap_or("?"),
+                subject
+            );
+        }
+        "list" => {
+            let mut params = json!({});
+            let map = params.as_object_mut().unwrap();
+
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--group" if i + 1 < args.len() => {
+                        map.insert("group".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    "--status" if i + 1 < args.len() => {
+                        map.insert("status".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    "--owner" if i + 1 < args.len() => {
+                        map.insert("owner".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    "--json" => {
+                        map.insert("_json".into(), json!(true));
+                        i += 1;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+
+            let json_output = params.get("_json").is_some();
+            let _ = params.as_object_mut().unwrap().remove("_json");
+
+            let result = client.call("task.list", params).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                process::exit(1);
+            });
+
+            let empty = vec![];
+            let tasks = result["tasks"].as_array().unwrap_or(&empty);
+
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                );
+                return;
+            }
+
+            if tasks.is_empty() {
+                println!("No tasks.");
+                return;
+            }
+
+            println!(
+                "{:<10} {:<14} {:<30} {:<8}",
+                "ID", "STATUS", "SUBJECT", "PRIORITY"
+            );
+            println!("{}", "-".repeat(65));
+            for t in tasks {
+                let id = t["id"].as_str().unwrap_or("?");
+                let short_id = if id.len() > 8 { &id[..8] } else { id };
+                println!(
+                    "{:<10} {:<14} {:<30} {:<8}",
+                    short_id,
+                    t["status"].as_str().unwrap_or("-"),
+                    truncate(t["subject"].as_str().unwrap_or("-"), 30),
+                    t["priority"].as_u64().unwrap_or(0),
+                );
+            }
+        }
+        "update" => {
+            if args.len() < 2 {
+                eprintln!(
+                    "usage: void-ctl task update <task_id> --status <status> [--result <text>]"
+                );
+                process::exit(1);
+            }
+            let task_id = &args[1];
+            let mut params = json!({"task_id": task_id});
+            let map = params.as_object_mut().unwrap();
+
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--status" if i + 1 < args.len() => {
+                        map.insert("status".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    "--result" if i + 1 < args.len() => {
+                        map.insert("result".into(), json!(&args[i + 1]));
+                        i += 2;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+
+            client
+                .call("task.update_status", params)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                });
+            println!("Task {} updated.", task_id);
+        }
+        "assign" => {
+            if args.len() < 2 {
+                eprintln!("usage: void-ctl task assign <task_id> [--to <terminal_id>]");
+                process::exit(1);
+            }
+            let task_id = &args[1];
+            let owner = args
+                .iter()
+                .position(|a| a == "--to")
+                .and_then(|i| args.get(i + 1))
+                .map(|s| s.as_str())
+                .unwrap_or(&client.terminal_id);
+
+            client
+                .call("task.assign", json!({"task_id": task_id, "owner": owner}))
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                });
+            println!("Task {} assigned.", task_id);
+        }
+        "unassign" => {
+            if args.len() < 2 {
+                eprintln!("usage: void-ctl task unassign <task_id>");
+                process::exit(1);
+            }
+            client
+                .call("task.unassign", json!({"task_id": &args[1]}))
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                });
+            println!("Task {} unassigned.", &args[1]);
+        }
+        "delete" => {
+            if args.len() < 2 {
+                eprintln!("usage: void-ctl task delete <task_id>");
+                process::exit(1);
+            }
+            client
+                .call("task.delete", json!({"task_id": &args[1]}))
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                });
+            println!("Task {} deleted.", &args[1]);
+        }
+        "get" => {
+            if args.len() < 2 {
+                eprintln!("usage: void-ctl task get <task_id>");
+                process::exit(1);
+            }
+            let result = client
+                .call("task.get", json!({"task_id": &args[1]}))
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).unwrap_or_default()
+            );
+        }
+        _ => {
+            eprintln!("unknown task command: {}", args[0]);
+            process::exit(1);
+        }
+    }
+}
+
 fn cmd_spawn(client: &mut VoidClient, _args: &[String]) {
     let result = client
         .call("spawn", json!({"count": 1}))
@@ -494,6 +735,7 @@ fn print_usage() {
     println!("  wait-idle <id> [--timeout N]  Wait for terminal idle");
     println!("  status <id> <status>          Set terminal status");
     println!("  group create|join|leave|list  Group management");
+    println!("  task create|list|update|...   Task management");
     println!("  context set|get|list|delete   Shared key-value store");
     println!("  message send|list             Direct messaging");
     println!("  spawn                         Spawn new terminal");

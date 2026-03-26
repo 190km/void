@@ -3,6 +3,7 @@
 
 pub mod apc;
 pub mod server;
+pub mod task;
 pub mod types;
 
 use std::collections::HashMap;
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 use alacritty_terminal::grid::Dimensions;
 use uuid::Uuid;
 
+use task::{Task, TaskInfo, TaskStatus};
 use types::*;
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,12 @@ pub struct TerminalBus {
     /// Subscribers are identified by a unique ID for cleanup.
     subscribers: Vec<(Uuid, EventFilter, mpsc::Sender<BusEvent>)>,
 
+    /// All tasks, keyed by UUID.
+    tasks: HashMap<Uuid, Task>,
+
+    /// Reverse dependency index: task_id → vec of tasks that depend on it.
+    task_dependents: HashMap<Uuid, Vec<Uuid>>,
+
     /// Pending actions that require VoidApp access (spawn, close).
     /// Polled by VoidApp::update() each frame.
     pub pending_spawns: Vec<PendingSpawn>,
@@ -82,6 +90,8 @@ impl TerminalBus {
             terminal_to_group: HashMap::new(),
             context: HashMap::new(),
             subscribers: Vec::new(),
+            tasks: HashMap::new(),
+            task_dependents: HashMap::new(),
             pending_spawns: Vec::new(),
             pending_closes: Vec::new(),
         }
@@ -297,12 +307,9 @@ impl TerminalBus {
                 let group = &self.groups[sg];
                 match &group.mode {
                     GroupMode::Orchestrated { orchestrator } => {
-                        // Orchestrator can inject into any worker
-                        if *orchestrator == source {
-                            Ok(())
-                        }
+                        // Orchestrator can inject into any worker;
                         // Workers can send messages to orchestrator (limited)
-                        else if *orchestrator == target {
+                        if *orchestrator == source || *orchestrator == target {
                             Ok(())
                         }
                         // Workers cannot inject into other workers
@@ -1144,6 +1151,318 @@ impl TerminalBus {
             true
         });
     }
+
+    // -----------------------------------------------------------------------
+    // Task CRUD
+    // -----------------------------------------------------------------------
+
+    /// Create a new task in a group.
+    #[allow(clippy::too_many_arguments)]
+    pub fn task_create(
+        &mut self,
+        subject: &str,
+        group_id: Uuid,
+        created_by: Uuid,
+        blocked_by: Vec<Uuid>,
+        owner: Option<Uuid>,
+        priority: u8,
+        tags: Vec<String>,
+        description: &str,
+    ) -> Result<Uuid, BusError> {
+        // Validate group exists
+        if !self.groups.contains_key(&group_id) {
+            return Err(BusError::GroupNotFound(group_id));
+        }
+
+        // Validate creator is in the group
+        if !self.terminals.contains_key(&created_by) {
+            return Err(BusError::TerminalNotFound(created_by));
+        }
+
+        // Validate owner if specified
+        if let Some(o) = owner {
+            if !self.terminals.contains_key(&o) {
+                return Err(BusError::TerminalNotFound(o));
+            }
+        }
+
+        // Validate blockers exist
+        for b in &blocked_by {
+            if !self.tasks.contains_key(b) {
+                return Err(BusError::TaskNotFound(*b));
+            }
+        }
+
+        let mut t = Task::new(subject, group_id, created_by);
+        t.description = description.to_string();
+        t.priority = priority;
+        t.tags = tags;
+        t.owner = owner;
+        t.blocked_by = blocked_by.clone();
+
+        // Check if task should start as blocked
+        if t.should_be_blocked(&self.tasks) {
+            t.status = TaskStatus::Blocked;
+        }
+
+        // Cycle detection
+        let task_id = t.id;
+        if self.detect_cycle(task_id, &blocked_by) {
+            return Err(BusError::CycleDetected);
+        }
+
+        self.tasks.insert(task_id, t);
+
+        // Update reverse dependency index
+        for b in &blocked_by {
+            self.task_dependents.entry(*b).or_default().push(task_id);
+        }
+
+        let group_name = self.groups.get(&group_id).map(|g| g.name.clone());
+        self.emit(BusEvent::TaskCreated {
+            task_id,
+            subject: subject.to_string(),
+            group_id,
+        });
+
+        Ok(task_id)
+    }
+
+    /// Update a task's status.
+    pub fn task_update_status(
+        &mut self,
+        task_id: Uuid,
+        new_status: TaskStatus,
+        _source: Uuid,
+        result: Option<String>,
+    ) -> Result<(), BusError> {
+        let task = self
+            .tasks
+            .get_mut(&task_id)
+            .ok_or(BusError::TaskNotFound(task_id))?;
+
+        let old_status = task.status.label().to_string();
+
+        // Update timestamps
+        match &new_status {
+            TaskStatus::InProgress => {
+                if task.started_at.is_none() {
+                    task.started_at = Some(Instant::now());
+                }
+            }
+            TaskStatus::Completed | TaskStatus::Failed => {
+                task.completed_at = Some(Instant::now());
+                if let Some(r) = &result {
+                    task.result = Some(r.clone());
+                }
+            }
+            _ => {}
+        }
+
+        task.status = new_status.clone();
+        let new_label = task.status.label().to_string();
+
+        self.emit(BusEvent::TaskStatusChanged {
+            task_id,
+            old_status,
+            new_status: new_label,
+        });
+
+        // If completed, check for dependents to unblock
+        if new_status == TaskStatus::Completed {
+            self.emit(BusEvent::TaskCompleted { task_id, result });
+        } else if new_status == TaskStatus::Failed {
+            self.emit(BusEvent::TaskFailed {
+                task_id,
+                reason: result,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Assign a task to a terminal.
+    pub fn task_assign(
+        &mut self,
+        task_id: Uuid,
+        owner: Uuid,
+        _source: Uuid,
+    ) -> Result<(), BusError> {
+        let task = self
+            .tasks
+            .get_mut(&task_id)
+            .ok_or(BusError::TaskNotFound(task_id))?;
+
+        if !self.terminals.contains_key(&owner) {
+            return Err(BusError::TerminalNotFound(owner));
+        }
+
+        task.owner = Some(owner);
+
+        self.emit(BusEvent::TaskAssigned { task_id, owner });
+
+        Ok(())
+    }
+
+    /// Unassign a task.
+    pub fn task_unassign(&mut self, task_id: Uuid, _source: Uuid) -> Result<(), BusError> {
+        let task = self
+            .tasks
+            .get_mut(&task_id)
+            .ok_or(BusError::TaskNotFound(task_id))?;
+
+        let old_owner = task.owner;
+        task.owner = None;
+
+        if let Some(old) = old_owner {
+            self.emit(BusEvent::TaskUnassigned {
+                task_id,
+                old_owner: old,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Delete a task.
+    pub fn task_delete(&mut self, task_id: Uuid, _source: Uuid) -> Result<(), BusError> {
+        if !self.tasks.contains_key(&task_id) {
+            return Err(BusError::TaskNotFound(task_id));
+        }
+
+        self.tasks.remove(&task_id);
+
+        // Clean up reverse dependency index
+        self.task_dependents.remove(&task_id);
+        for deps in self.task_dependents.values_mut() {
+            deps.retain(|id| *id != task_id);
+        }
+
+        // Remove from blocked_by lists of other tasks
+        for task in self.tasks.values_mut() {
+            task.blocked_by.retain(|id| *id != task_id);
+        }
+
+        self.emit(BusEvent::TaskDeleted { task_id });
+
+        Ok(())
+    }
+
+    /// List all tasks in a group, optionally filtered.
+    pub fn task_list(
+        &self,
+        group_id: Uuid,
+        status_filter: Option<TaskStatus>,
+        owner_filter: Option<Uuid>,
+    ) -> Vec<TaskInfo> {
+        self.tasks
+            .values()
+            .filter(|t| t.group_id == group_id)
+            .filter(|t| status_filter.as_ref().is_none_or(|s| t.status == *s))
+            .filter(|t| owner_filter.is_none_or(|o| t.owner == Some(o)))
+            .map(|t| self.build_task_info(t))
+            .collect()
+    }
+
+    /// Get a single task's info.
+    pub fn task_get(&self, task_id: Uuid) -> Option<TaskInfo> {
+        self.tasks.get(&task_id).map(|t| self.build_task_info(t))
+    }
+
+    fn build_task_info(&self, task: &Task) -> TaskInfo {
+        let owner_title = task.owner.and_then(|o| {
+            self.terminals
+                .get(&o)
+                .and_then(|h| h.title.lock().ok().map(|t| t.clone()))
+        });
+        let group_name = self.groups.get(&task.group_id).map(|g| g.name.clone());
+        let blocking: Vec<Uuid> = self
+            .task_dependents
+            .get(&task.id)
+            .cloned()
+            .unwrap_or_default();
+        let elapsed_ms = task.elapsed().map(|d| d.as_millis() as u64);
+
+        TaskInfo {
+            id: task.id,
+            subject: task.subject.clone(),
+            description: task.description.clone(),
+            status: task.status.label().to_string(),
+            owner: task.owner,
+            owner_title,
+            group_id: task.group_id,
+            group_name,
+            created_by: task.created_by,
+            blocked_by: task.blocked_by.clone(),
+            blocking,
+            priority: task.priority,
+            tags: task.tags.clone(),
+            result: task.result.clone(),
+            elapsed_ms,
+        }
+    }
+
+    // ── Task Engine (called from tick) ──────────────────────────
+
+    /// Process task state transitions. Called every frame from VoidApp::update().
+    pub fn tick_tasks(&mut self) {
+        let mut to_unblock: Vec<Uuid> = Vec::new();
+
+        for (id, task) in &self.tasks {
+            if task.status != TaskStatus::Blocked {
+                continue;
+            }
+
+            let all_blockers_done = task.blocked_by.iter().all(|blocker_id| {
+                self.tasks
+                    .get(blocker_id)
+                    .map(|b| b.status == TaskStatus::Completed)
+                    .unwrap_or(true) // missing blocker = unblock
+            });
+
+            if all_blockers_done {
+                to_unblock.push(*id);
+            }
+        }
+
+        for task_id in to_unblock {
+            if let Some(task) = self.tasks.get_mut(&task_id) {
+                task.status = TaskStatus::Pending;
+                self.emit(BusEvent::TaskUnblocked { task_id });
+            }
+        }
+    }
+
+    // ── DAG Validation ──────────────────────────────────────────
+
+    /// Check if adding `blocked_by` edges to `task_id` would create a cycle.
+    fn detect_cycle(&self, task_id: Uuid, blocked_by: &[Uuid]) -> bool {
+        // DFS from each blocker: if we can reach task_id, there's a cycle
+        for &blocker in blocked_by {
+            let mut visited = std::collections::HashSet::new();
+            let mut stack = vec![blocker];
+            while let Some(current) = stack.pop() {
+                if current == task_id {
+                    return true;
+                }
+                if !visited.insert(current) {
+                    continue;
+                }
+                // Follow the blocked_by edges of 'current'
+                if let Some(t) = self.tasks.get(&current) {
+                    for &dep in &t.blocked_by {
+                        stack.push(dep);
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Get all tasks (for kanban sync).
+    pub fn all_tasks(&self) -> &HashMap<Uuid, Task> {
+        &self.tasks
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1163,6 +1482,8 @@ pub enum BusError {
     LockFailed(&'static str),
     WriteFailed(String),
     Timeout,
+    TaskNotFound(Uuid),
+    CycleDetected,
 }
 
 impl std::fmt::Display for BusError {
@@ -1178,6 +1499,8 @@ impl std::fmt::Display for BusError {
             Self::LockFailed(what) => write!(f, "failed to lock: {}", what),
             Self::WriteFailed(msg) => write!(f, "write failed: {}", msg),
             Self::Timeout => write!(f, "operation timed out"),
+            Self::TaskNotFound(id) => write!(f, "task not found: {}", id),
+            Self::CycleDetected => write!(f, "dependency cycle detected"),
         }
     }
 }

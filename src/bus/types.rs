@@ -56,10 +56,11 @@ pub struct TerminalHandle {
 ///
 /// Updated automatically by the bus (via output monitoring) or manually
 /// by the orchestrator via `set_status`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum TerminalStatus {
     /// Shell prompt is visible, no command running.
     /// Detected when `last_output_at` has not changed for `idle_threshold`.
+    #[default]
     Idle,
 
     /// A command is executing. Output is flowing.
@@ -89,12 +90,6 @@ pub enum TerminalStatus {
         /// When the error occurred.
         occurred_at: Instant,
     },
-}
-
-impl Default for TerminalStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 impl TerminalStatus {
@@ -398,6 +393,45 @@ pub enum BusEvent {
         group_id: Uuid,
         payload: String,
     },
+
+    // ── Task Events ─────────────────────────────────────────────
+    /// A new task was created.
+    TaskCreated {
+        task_id: Uuid,
+        subject: String,
+        group_id: Uuid,
+    },
+
+    /// A task's status changed.
+    TaskStatusChanged {
+        task_id: Uuid,
+        old_status: String,
+        new_status: String,
+    },
+
+    /// A task was assigned to a terminal.
+    TaskAssigned { task_id: Uuid, owner: Uuid },
+
+    /// A task was unassigned.
+    TaskUnassigned { task_id: Uuid, old_owner: Uuid },
+
+    /// A blocked task was unblocked (all dependencies completed).
+    TaskUnblocked { task_id: Uuid },
+
+    /// A task was completed.
+    TaskCompleted {
+        task_id: Uuid,
+        result: Option<String>,
+    },
+
+    /// A task failed.
+    TaskFailed {
+        task_id: Uuid,
+        reason: Option<String>,
+    },
+
+    /// A task was deleted.
+    TaskDeleted { task_id: Uuid },
 }
 
 impl BusEvent {
@@ -418,6 +452,14 @@ impl BusEvent {
             Self::ContextDeleted { .. } => "context.deleted",
             Self::MessageSent { .. } => "message.sent",
             Self::BroadcastSent { .. } => "broadcast.sent",
+            Self::TaskCreated { .. } => "task.created",
+            Self::TaskStatusChanged { .. } => "task.status_changed",
+            Self::TaskAssigned { .. } => "task.assigned",
+            Self::TaskUnassigned { .. } => "task.unassigned",
+            Self::TaskUnblocked { .. } => "task.unblocked",
+            Self::TaskCompleted { .. } => "task.completed",
+            Self::TaskFailed { .. } => "task.failed",
+            Self::TaskDeleted { .. } => "task.deleted",
         }
     }
 }
@@ -494,6 +536,8 @@ impl EventFilter {
             BusEvent::ContextUpdated { source, .. } => vec![*source],
             BusEvent::MessageSent { from, to, .. } => vec![*from, *to],
             BusEvent::BroadcastSent { from, .. } => vec![*from],
+            BusEvent::TaskAssigned { owner, .. } => vec![*owner],
+            BusEvent::TaskUnassigned { old_owner, .. } => vec![*old_owner],
             _ => vec![],
         }
     }
