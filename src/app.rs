@@ -43,6 +43,10 @@ pub struct VoidApp {
     #[allow(dead_code)]
     bus_port: u16,
     edge_overlay: CanvasEdgeOverlay,
+    edge_subscription: Option<(
+        uuid::Uuid,
+        std::sync::mpsc::Receiver<crate::bus::types::BusEvent>,
+    )>,
 }
 
 impl VoidApp {
@@ -123,6 +127,7 @@ impl VoidApp {
             bus,
             bus_port,
             edge_overlay: CanvasEdgeOverlay::new(),
+            edge_subscription: None,
         }
     }
 
@@ -258,6 +263,31 @@ impl VoidApp {
                 let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
             }
+            Command::ToggleOrchestration => {
+                self.toggle_orchestration();
+            }
+            Command::SpawnWorker => {
+                self.spawn_terminal();
+                if let Some(ref session) = self.ws().orchestration {
+                    let group_id = session.group_id;
+                    if let Some(panel) = self.ws().panels.last() {
+                        let panel_id = panel.id();
+                        if let Ok(mut b) = self.bus.lock() {
+                            let _ = b.join_group(panel_id, group_id);
+                        }
+                    }
+                }
+            }
+            Command::ShowKanban => {
+                if let Some(ref mut session) = self.ws_mut().orchestration {
+                    session.kanban_visible = !session.kanban_visible;
+                }
+            }
+            Command::ShowNetwork => {
+                if let Some(ref mut session) = self.ws_mut().orchestration {
+                    session.network_visible = !session.network_visible;
+                }
+            }
         }
     }
 
@@ -308,6 +338,12 @@ impl VoidApp {
             ws.orchestration_enabled = false;
             ws.orchestration = None;
             self.edge_overlay.enabled = false;
+            // Unsubscribe edge overlay from bus events
+            if let Some((sub_id, _)) = self.edge_subscription.take() {
+                if let Ok(mut b) = self.bus.lock() {
+                    b.unsubscribe(sub_id);
+                }
+            }
         } else {
             // Enable: create group, assign roles, spawn kanban + network
             let leader_id = ws
@@ -386,6 +422,13 @@ impl VoidApp {
                 ws.orchestration_enabled = true;
                 ws.orchestration = Some(session);
                 self.edge_overlay.enabled = true;
+
+                // Subscribe edge overlay to bus events
+                let (sub_id, rx) = {
+                    let mut b = self.bus.lock().unwrap();
+                    b.subscribe(crate::bus::types::EventFilter::default())
+                };
+                self.edge_subscription = Some((sub_id, rx));
             }
         }
     }
@@ -518,9 +561,14 @@ impl eframe::App for VoidApp {
             drop(guard);
         }
 
-        // Tick edge overlay
+        // Tick edge overlay + feed events
         {
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
+            if let Some((_, ref rx)) = self.edge_subscription {
+                while let Ok(event) = rx.try_recv() {
+                    self.edge_overlay.on_event(&event);
+                }
+            }
             self.edge_overlay.tick(dt);
         }
 
@@ -827,6 +875,19 @@ impl eframe::App for VoidApp {
                 ctx.set_transform_layer(ui.layer_id(), transform);
                 ui.set_clip_rect(clip);
                 ui.allocate_rect(clip, egui::Sense::hover());
+
+                // Draw edge overlay (between panels, below panel content)
+                if self.edge_overlay.enabled {
+                    let panel_rects: std::collections::HashMap<uuid::Uuid, egui::Rect> = self
+                        .ws()
+                        .panels
+                        .iter()
+                        .filter(|p| matches!(p, crate::panel::CanvasPanel::Terminal(_)))
+                        .map(|p| (p.id(), p.rect()))
+                        .collect();
+                    self.edge_overlay
+                        .draw(ui.painter(), &panel_rects, transform);
+                }
 
                 let mut order: Vec<usize> = (0..self.ws().panels.len()).collect();
                 order.sort_by_key(|&i| self.ws().panels[i].z_index());

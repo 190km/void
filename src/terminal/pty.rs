@@ -107,6 +107,19 @@ impl PtyHandle {
         if let Ok(port) = std::env::var("VOID_BUS_PORT") {
             cmd.env("VOID_BUS_PORT", port);
         }
+        // Orchestration env vars (set when orchestration mode is active)
+        if let Ok(v) = std::env::var("VOID_TEAM_NAME") {
+            cmd.env("VOID_TEAM_NAME", v);
+        }
+        if let Ok(v) = std::env::var("VOID_ROLE") {
+            cmd.env("VOID_ROLE", v);
+        }
+        if let Ok(v) = std::env::var("VOID_GROUP_ID") {
+            cmd.env("VOID_GROUP_ID", v);
+        }
+        if let Ok(v) = std::env::var("VOID_ORCHESTRATION_PROTOCOL") {
+            cmd.env("VOID_ORCHESTRATION_PROTOCOL", v);
+        }
         if let Some(dir) = cwd {
             cmd.cwd(dir);
         }

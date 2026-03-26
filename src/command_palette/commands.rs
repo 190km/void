@@ -16,6 +16,10 @@ pub enum Command {
     FocusNext,
     FocusPrev,
     ToggleFullscreen,
+    ToggleOrchestration,
+    SpawnWorker,
+    ShowKanban,
+    ShowNetwork,
 }
 
 /// A registered command with display info.
@@ -91,5 +95,25 @@ pub const COMMANDS: &[CommandEntry] = &[
         command: Command::ToggleFullscreen,
         label: "Toggle Fullscreen",
         shortcut: "F11",
+    },
+    CommandEntry {
+        command: Command::ToggleOrchestration,
+        label: "Orchestration: Toggle",
+        shortcut: "Ctrl+Shift+O",
+    },
+    CommandEntry {
+        command: Command::SpawnWorker,
+        label: "Orchestration: Spawn Worker",
+        shortcut: "",
+    },
+    CommandEntry {
+        command: Command::ShowKanban,
+        label: "Orchestration: Show Kanban",
+        shortcut: "Ctrl+Shift+K",
+    },
+    CommandEntry {
+        command: Command::ShowNetwork,
+        label: "Orchestration: Show Network",
+        shortcut: "",
     },
 ];
