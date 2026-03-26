@@ -446,18 +446,25 @@ impl VoidApp {
         let bus_port = self.bus_port;
         let mut bus = self.bus.lock().unwrap();
 
-        // Collect terminal IDs in the group
+        // Collect group members info
         let group_info = bus.get_group(group_id);
-        let members: Vec<(uuid::Uuid, crate::bus::types::TerminalRole)> = group_info
-            .map(|g| g.members.iter().map(|m| (m.terminal_id, m.role)).collect())
+        let members: Vec<(uuid::Uuid, crate::bus::types::TerminalRole, String)> = group_info
+            .map(|g| {
+                g.members
+                    .iter()
+                    .map(|m| (m.terminal_id, m.role, m.title.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
 
-        let worker_count = members
+        // Build worker list for leader prompt
+        let workers: Vec<(uuid::Uuid, String)> = members
             .iter()
-            .filter(|(_, r)| *r == crate::bus::types::TerminalRole::Worker)
-            .count();
+            .filter(|(_, r, _)| *r == crate::bus::types::TerminalRole::Worker)
+            .map(|(id, _, title)| (*id, title.clone()))
+            .collect();
 
-        for (tid, role) in &members {
+        for (tid, role, _title) in &members {
             let role_str = match role {
                 crate::bus::types::TerminalRole::Orchestrator => "leader",
                 crate::bus::types::TerminalRole::Worker => "worker",
@@ -465,21 +472,22 @@ impl VoidApp {
                 _ => continue,
             };
 
-            // Inject env var exports into the shell
-            let env_commands = format!(
-                "export VOID_TEAM_NAME={team_name} VOID_ROLE={role_str} VOID_GROUP_ID={group_id}\n"
+            // 1. Inject env var exports into the shell
+            let env_cmd = format!(
+                "export VOID_TEAM_NAME={team_name} VOID_ROLE={role_str} VOID_GROUP_ID={group_id}\r"
             );
-            let _ = bus.inject_bytes(*tid, env_commands.as_bytes(), None);
+            let _ = bus.inject_bytes(*tid, env_cmd.as_bytes(), None);
 
-            // Inject the coordination prompt
+            // 2. Write the protocol file to /tmp so agents can read it
+            let protocol_dir = format!("/tmp/void-orchestration-{}", group_id);
+            let mkdir_cmd = format!("mkdir -p {protocol_dir} 2>/dev/null\r");
+            let _ = bus.inject_bytes(*tid, mkdir_cmd.as_bytes(), None);
+
+            // 3. Generate the full coordination prompt
             let prompt = match role {
                 crate::bus::types::TerminalRole::Orchestrator => {
                     crate::orchestration::prompt::leader_prompt(
-                        *tid,
-                        team_name,
-                        group_id,
-                        worker_count,
-                        bus_port,
+                        *tid, team_name, group_id, &workers, bus_port,
                     )
                 }
                 crate::bus::types::TerminalRole::Worker => {
@@ -490,9 +498,20 @@ impl VoidApp {
                 _ => continue,
             };
 
-            // Inject as echo so it appears in terminal history
-            let echo_cmd = format!("echo '{}'\n", prompt.replace('\'', "'\\''"));
-            let _ = bus.inject_bytes(*tid, echo_cmd.as_bytes(), None);
+            // 4. Write protocol file via heredoc (clean, no escaping issues)
+            let protocol_path = format!("{protocol_dir}/{role_str}-{tid}.md");
+            let heredoc_cmd = format!(
+                "cat > {protocol_path} << 'VOID_PROTOCOL_END'\n{prompt}VOID_PROTOCOL_END\r"
+            );
+            let _ = bus.inject_bytes(*tid, heredoc_cmd.as_bytes(), None);
+
+            // 5. Export the protocol file path
+            let export_cmd = format!("export VOID_ORCHESTRATION_PROTOCOL={protocol_path}\r");
+            let _ = bus.inject_bytes(*tid, export_cmd.as_bytes(), None);
+
+            // 6. Display the prompt in the terminal so the agent sees it
+            let cat_cmd = format!("cat {protocol_path}\r");
+            let _ = bus.inject_bytes(*tid, cat_cmd.as_bytes(), None);
         }
     }
 
@@ -587,8 +606,17 @@ impl eframe::App for VoidApp {
                 let c = std::mem::take(&mut bus.pending_closes);
                 (s, c)
             };
-            for _spawn in spawns {
+            for spawn_req in spawns {
                 self.spawn_terminal();
+                // If the spawn request includes a group, auto-join the new terminal
+                if let Some(ref group_name) = spawn_req.group_name {
+                    if let Some(panel) = self.ws().panels.last() {
+                        let panel_id = panel.id();
+                        if let Ok(mut b) = bus_clone.lock() {
+                            let _ = b.join_group_by_name(panel_id, group_name);
+                        }
+                    }
+                }
             }
             for close_id in closes {
                 let idx = self.ws().panels.iter().position(|p| p.id() == close_id);

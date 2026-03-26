@@ -681,6 +681,81 @@ fn cmd_task(client: &mut VoidClient, args: &[String]) {
                 serde_json::to_string_pretty(&result).unwrap_or_default()
             );
         }
+        "wait" => {
+            let mut timeout: u64 = 300;
+            let mut poll_interval: u64 = 5;
+
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--timeout" if i + 1 < args.len() => {
+                        timeout = args[i + 1].parse().unwrap_or(300);
+                        i += 2;
+                    }
+                    "--interval" if i + 1 < args.len() => {
+                        poll_interval = args[i + 1].parse().unwrap_or(5);
+                        i += 2;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+
+            let start = std::time::Instant::now();
+            let deadline = std::time::Duration::from_secs(timeout);
+
+            loop {
+                let result = client.call("task.list", json!({})).unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                });
+
+                let empty = vec![];
+                let tasks = result["tasks"].as_array().unwrap_or(&empty);
+                let total = tasks.len();
+                let done = tasks
+                    .iter()
+                    .filter(|t| t["status"].as_str() == Some("completed"))
+                    .count();
+                let failed = tasks
+                    .iter()
+                    .filter(|t| t["status"].as_str() == Some("failed"))
+                    .count();
+                let in_progress = tasks
+                    .iter()
+                    .filter(|t| t["status"].as_str() == Some("in_progress"))
+                    .count();
+                let blocked = tasks
+                    .iter()
+                    .filter(|t| t["status"].as_str() == Some("blocked"))
+                    .count();
+
+                eprint!(
+                    "\rWaiting... [{done}/{total} done] [{in_progress} in progress] [{blocked} blocked] [{failed} failed]  "
+                );
+
+                if done + failed >= total && total > 0 {
+                    let elapsed = start.elapsed().as_secs();
+                    eprintln!();
+                    if failed > 0 {
+                        println!("Completed with {failed} failures in {elapsed}s.");
+                        process::exit(1);
+                    } else {
+                        println!("All {total} tasks completed in {elapsed}s.");
+                    }
+                    return;
+                }
+
+                if start.elapsed() >= deadline {
+                    eprintln!();
+                    println!("Timeout reached ({timeout}s). {done}/{total} done.");
+                    process::exit(2);
+                }
+
+                std::thread::sleep(std::time::Duration::from_secs(poll_interval));
+            }
+        }
         _ => {
             eprintln!("unknown task command: {}", args[0]);
             process::exit(1);
@@ -689,16 +764,23 @@ fn cmd_task(client: &mut VoidClient, args: &[String]) {
 }
 
 fn cmd_spawn(client: &mut VoidClient, _args: &[String]) {
-    let result = client
-        .call("spawn", json!({"count": 1}))
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            process::exit(1);
-        });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&result).unwrap_or_default()
-    );
+    // If we're in a team, pass the group name so the new terminal auto-joins
+    let group = env::var("VOID_TEAM_NAME").ok();
+    let mut params = json!({"count": 1});
+    if let Some(g) = group {
+        params
+            .as_object_mut()
+            .unwrap()
+            .insert("group".into(), json!(g));
+    }
+    let result = client.call("spawn", params).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        process::exit(1);
+    });
+    println!("Spawned new terminal.");
+    if result["queued"].as_bool() == Some(true) {
+        println!("(terminal will appear momentarily)");
+    }
 }
 
 fn cmd_close(client: &mut VoidClient, args: &[String]) {
