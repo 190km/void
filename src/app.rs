@@ -411,7 +411,7 @@ impl VoidApp {
 
                 let mut session = crate::orchestration::OrchestrationSession::new(
                     group_id,
-                    group_name,
+                    group_name.clone(),
                     Some(leader),
                 );
                 session.kanban_panel_id = Some(kanban_id);
@@ -429,7 +429,70 @@ impl VoidApp {
                     b.subscribe(crate::bus::types::EventFilter::default())
                 };
                 self.edge_subscription = Some((sub_id, rx));
+
+                // Inject coordination prompts into all terminals
+                self.inject_orchestration_prompts(group_id, &group_name, leader);
             }
+        }
+    }
+
+    /// Inject env vars and coordination prompt into all terminals in the group.
+    fn inject_orchestration_prompts(
+        &self,
+        group_id: uuid::Uuid,
+        team_name: &str,
+        leader_id: uuid::Uuid,
+    ) {
+        let bus_port = self.bus_port;
+        let mut bus = self.bus.lock().unwrap();
+
+        // Collect terminal IDs in the group
+        let group_info = bus.get_group(group_id);
+        let members: Vec<(uuid::Uuid, crate::bus::types::TerminalRole)> = group_info
+            .map(|g| g.members.iter().map(|m| (m.terminal_id, m.role)).collect())
+            .unwrap_or_default();
+
+        let worker_count = members
+            .iter()
+            .filter(|(_, r)| *r == crate::bus::types::TerminalRole::Worker)
+            .count();
+
+        for (tid, role) in &members {
+            let role_str = match role {
+                crate::bus::types::TerminalRole::Orchestrator => "leader",
+                crate::bus::types::TerminalRole::Worker => "worker",
+                crate::bus::types::TerminalRole::Peer => "peer",
+                _ => continue,
+            };
+
+            // Inject env var exports into the shell
+            let env_commands = format!(
+                "export VOID_TEAM_NAME={team_name} VOID_ROLE={role_str} VOID_GROUP_ID={group_id}\n"
+            );
+            let _ = bus.inject_bytes(*tid, env_commands.as_bytes(), None);
+
+            // Inject the coordination prompt
+            let prompt = match role {
+                crate::bus::types::TerminalRole::Orchestrator => {
+                    crate::orchestration::prompt::leader_prompt(
+                        *tid,
+                        team_name,
+                        group_id,
+                        worker_count,
+                        bus_port,
+                    )
+                }
+                crate::bus::types::TerminalRole::Worker => {
+                    crate::orchestration::prompt::worker_prompt(
+                        *tid, team_name, group_id, leader_id, bus_port,
+                    )
+                }
+                _ => continue,
+            };
+
+            // Inject as echo so it appears in terminal history
+            let echo_cmd = format!("echo '{}'\n", prompt.replace('\'', "'\\''"));
+            let _ = bus.inject_bytes(*tid, echo_cmd.as_bytes(), None);
         }
     }
 
