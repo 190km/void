@@ -436,7 +436,8 @@ impl VoidApp {
         }
     }
 
-    /// Inject env vars and coordination prompt into all terminals in the group.
+    /// Write a protocol file from Rust and inject env vars into the terminal.
+    /// Cross-platform: writes file via std::fs, uses `set` on Windows / `export` on Unix.
     fn inject_orchestration_prompts(
         &self,
         group_id: uuid::Uuid,
@@ -464,6 +465,10 @@ impl VoidApp {
             .map(|(id, _, title)| (*id, title.clone()))
             .collect();
 
+        // Create protocol directory from Rust (cross-platform)
+        let protocol_dir = std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
+        std::fs::create_dir_all(&protocol_dir).ok();
+
         for (tid, role, _title) in &members {
             let role_str = match role {
                 crate::bus::types::TerminalRole::Orchestrator => "leader",
@@ -472,18 +477,7 @@ impl VoidApp {
                 _ => continue,
             };
 
-            // 1. Inject env var exports into the shell
-            let env_cmd = format!(
-                "export VOID_TEAM_NAME={team_name} VOID_ROLE={role_str} VOID_GROUP_ID={group_id}\r"
-            );
-            let _ = bus.inject_bytes(*tid, env_cmd.as_bytes(), None);
-
-            // 2. Write the protocol file to /tmp so agents can read it
-            let protocol_dir = format!("/tmp/void-orchestration-{}", group_id);
-            let mkdir_cmd = format!("mkdir -p {protocol_dir} 2>/dev/null\r");
-            let _ = bus.inject_bytes(*tid, mkdir_cmd.as_bytes(), None);
-
-            // 3. Generate the full coordination prompt
+            // 1. Generate the full coordination prompt
             let prompt = match role {
                 crate::bus::types::TerminalRole::Orchestrator => {
                     crate::orchestration::prompt::leader_prompt(
@@ -498,20 +492,57 @@ impl VoidApp {
                 _ => continue,
             };
 
-            // 4. Write protocol file via heredoc (clean, no escaping issues)
-            let protocol_path = format!("{protocol_dir}/{role_str}-{tid}.md");
-            let heredoc_cmd = format!(
-                "cat > {protocol_path} << 'VOID_PROTOCOL_END'\n{prompt}VOID_PROTOCOL_END\r"
+            // 2. Write protocol file from Rust (no shell commands needed)
+            let protocol_path = protocol_dir.join(format!("{role_str}-{tid}.md"));
+            std::fs::write(&protocol_path, &prompt).ok();
+            let protocol_path_str = protocol_path.to_string_lossy().to_string();
+
+            // 3. Inject env vars + display protocol (platform-specific shell commands)
+            let commands = Self::build_env_inject_commands(
+                team_name,
+                role_str,
+                &group_id.to_string(),
+                &protocol_path_str,
             );
-            let _ = bus.inject_bytes(*tid, heredoc_cmd.as_bytes(), None);
+            let _ = bus.inject_bytes(*tid, commands.as_bytes(), None);
+        }
+    }
 
-            // 5. Export the protocol file path
-            let export_cmd = format!("export VOID_ORCHESTRATION_PROTOCOL={protocol_path}\r");
-            let _ = bus.inject_bytes(*tid, export_cmd.as_bytes(), None);
-
-            // 6. Display the prompt in the terminal so the agent sees it
-            let cat_cmd = format!("cat {protocol_path}\r");
-            let _ = bus.inject_bytes(*tid, cat_cmd.as_bytes(), None);
+    /// Build shell commands to set env vars and display the protocol file.
+    /// Returns the right syntax for the current platform.
+    fn build_env_inject_commands(
+        team_name: &str,
+        role: &str,
+        group_id: &str,
+        protocol_path: &str,
+    ) -> String {
+        if cfg!(windows) {
+            // Windows CMD
+            format!(
+                concat!(
+                    "set VOID_TEAM_NAME={team}\r",
+                    "set VOID_ROLE={role}\r",
+                    "set VOID_GROUP_ID={gid}\r",
+                    "set VOID_ORCHESTRATION_PROTOCOL={path}\r",
+                    "type \"{path}\"\r",
+                ),
+                team = team_name,
+                role = role,
+                gid = group_id,
+                path = protocol_path,
+            )
+        } else {
+            // Unix bash/zsh
+            format!(
+                concat!(
+                    "export VOID_TEAM_NAME={team} VOID_ROLE={role} VOID_GROUP_ID={gid} VOID_ORCHESTRATION_PROTOCOL='{path}'\r",
+                    "cat '{path}'\r",
+                ),
+                team = team_name,
+                role = role,
+                gid = group_id,
+                path = protocol_path,
+            )
         }
     }
 
@@ -635,29 +666,27 @@ impl eframe::App for VoidApp {
                             let group_id = session.group_id;
                             let bus_port = self.bus_port;
 
-                            // Inject env vars + worker prompt
-                            let env_cmd = format!(
-                                "export VOID_TEAM_NAME={team_name} VOID_ROLE=worker VOID_GROUP_ID={group_id}\r"
-                            );
-                            if let Ok(mut b) = bus_clone.lock() {
-                                let _ = b.inject_bytes(pid, env_cmd.as_bytes(), None);
-                            }
+                            // Write protocol file from Rust
+                            let protocol_dir =
+                                std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
+                            std::fs::create_dir_all(&protocol_dir).ok();
 
                             let prompt = crate::orchestration::prompt::worker_prompt(
                                 pid, &team_name, group_id, leader_id, bus_port,
                             );
-                            let protocol_dir = format!("/tmp/void-orchestration-{group_id}");
-                            let write_cmd = format!(
-                                "mkdir -p {protocol_dir} 2>/dev/null && cat > {protocol_dir}/worker-{pid}.md << 'VOID_PROTOCOL_END'\n{prompt}VOID_PROTOCOL_END\r"
+                            let protocol_path = protocol_dir.join(format!("worker-{pid}.md"));
+                            std::fs::write(&protocol_path, &prompt).ok();
+                            let path_str = protocol_path.to_string_lossy().to_string();
+
+                            // Inject env vars + display
+                            let commands = Self::build_env_inject_commands(
+                                &team_name,
+                                "worker",
+                                &group_id.to_string(),
+                                &path_str,
                             );
                             if let Ok(mut b) = bus_clone.lock() {
-                                let _ = b.inject_bytes(pid, write_cmd.as_bytes(), None);
-                            }
-                            let export_cmd = format!(
-                                "export VOID_ORCHESTRATION_PROTOCOL={protocol_dir}/worker-{pid}.md\r"
-                            );
-                            if let Ok(mut b) = bus_clone.lock() {
-                                let _ = b.inject_bytes(pid, export_cmd.as_bytes(), None);
+                                let _ = b.inject_bytes(pid, commands.as_bytes(), None);
                             }
                         }
                     }
