@@ -47,9 +47,6 @@ pub struct VoidApp {
         uuid::Uuid,
         std::sync::mpsc::Receiver<crate::bus::types::BusEvent>,
     )>,
-    /// Deferred prompt injections: (terminal_id, prompt_text, inject_after_time).
-    /// Waits for the agent CLI to be ready before pasting.
-    pending_injections: Vec<(uuid::Uuid, String, std::time::Instant)>,
 }
 
 impl VoidApp {
@@ -131,7 +128,6 @@ impl VoidApp {
             bus_port,
             edge_overlay: CanvasEdgeOverlay::new(),
             edge_subscription: None,
-            pending_injections: Vec::new(),
         }
     }
 
@@ -396,15 +392,9 @@ impl VoidApp {
                 }
             };
 
-            // Launch claude in the leader terminal
-            {
-                let mut b = self.bus.lock().unwrap();
-                let _ = b.inject_bytes(leader, b"claude\r", None);
-            }
-
-            // Build leader prompt and defer injection (~4s for Claude to start)
-            let workers: Vec<(uuid::Uuid, String)> = Vec::new(); // no workers yet
-            let prompt = crate::orchestration::prompt::leader_prompt(
+            // Build leader protocol + launch claude with it baked in
+            let workers: Vec<(uuid::Uuid, String)> = Vec::new();
+            let protocol = crate::orchestration::prompt::leader_prompt(
                 leader,
                 &group_name,
                 group_id,
@@ -412,15 +402,24 @@ impl VoidApp {
                 self.bus_port,
             );
 
-            // Write protocol file to disk
+            // Write protocol to temp file — claude reads it via --append-system-prompt
             let protocol_dir = std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
             std::fs::create_dir_all(&protocol_dir).ok();
             let protocol_path = protocol_dir.join(format!("leader-{leader}.md"));
-            std::fs::write(&protocol_path, &prompt).ok();
+            std::fs::write(&protocol_path, &protocol).ok();
+            let path_str = protocol_path.to_string_lossy().to_string();
 
-            // Defer prompt injection: wait 4 seconds for Claude CLI to be ready
-            let inject_at = std::time::Instant::now() + std::time::Duration::from_secs(4);
-            self.pending_injections.push((leader, prompt, inject_at));
+            // Launch claude with protocol in system prompt (invisible) + short kick-off via -p
+            let launch_cmd = Self::build_claude_launch_cmd(
+                &path_str,
+                "You are the LEADER of an orchestration team. \
+                 Use `void-ctl spawn` to create worker agents, then use `void-ctl task create` \
+                 to assign tasks. Start now.",
+            );
+            {
+                let mut b = self.bus.lock().unwrap();
+                let _ = b.inject_bytes(leader, launch_cmd.as_bytes(), None);
+            }
 
             // Position kanban to the right of terminal cluster
             let aws = self.active_ws;
@@ -480,6 +479,30 @@ impl VoidApp {
                 b.subscribe(crate::bus::types::EventFilter::default())
             };
             self.edge_subscription = Some((sub_id, rx));
+        }
+    }
+
+    /// Build the shell command to launch claude with protocol in system prompt.
+    ///
+    /// Uses `--append-system-prompt` (invisible to user) for the full protocol,
+    /// and `-p` for a short kick-off message (the first thing Claude works on).
+    /// Like ClawTeam's approach: protocol is hidden, agent just starts working.
+    fn build_claude_launch_cmd(protocol_file: &str, kickoff_message: &str) -> String {
+        if cfg!(windows) {
+            // Windows: use PowerShell to read the file and pass as argument
+            // Double quotes inside PowerShell args need escaping
+            let escaped_msg = kickoff_message.replace('"', "`\"");
+            format!(
+                "powershell -NoProfile -Command \"claude --dangerously-skip-permissions --append-system-prompt (Get-Content -Raw '{}') -p '{}'\"\r",
+                protocol_file.replace('\'', "''"),
+                escaped_msg.replace('\'', "''"),
+            )
+        } else {
+            // Unix: use $() subshell to read the file
+            format!(
+                "claude --dangerously-skip-permissions --append-system-prompt \"$(cat '{}')\" -p \"{}\"\r",
+                protocol_file, kickoff_message,
+            )
         }
     }
 
@@ -586,16 +609,7 @@ impl eframe::App for VoidApp {
                         }
                     }
 
-                    // Execute command in the new terminal (e.g. "claude")
-                    if let Some(ref command) = spawn_req.command {
-                        // Small delay to let the shell initialize
-                        let cmd_with_enter = format!("{}\r", command);
-                        if let Ok(mut b) = bus_clone.lock() {
-                            let _ = b.inject_bytes(pid, cmd_with_enter.as_bytes(), None);
-                        }
-                    }
-
-                    // If in a group, inject worker coordination prompt
+                    // If in a group, launch claude with protocol baked in
                     if spawn_req.group_name.is_some() {
                         if let Some(ref session) = self.ws().orchestration {
                             let leader_id = session.leader_id.unwrap_or(pid);
@@ -603,21 +617,31 @@ impl eframe::App for VoidApp {
                             let group_id = session.group_id;
                             let bus_port = self.bus_port;
 
-                            // Write protocol file + inject prompt into PTY
+                            // Write worker protocol file
                             let protocol_dir =
                                 std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
                             std::fs::create_dir_all(&protocol_dir).ok();
-
                             let prompt = crate::orchestration::prompt::worker_prompt(
                                 pid, &team_name, group_id, leader_id, bus_port,
                             );
                             let protocol_path = protocol_dir.join(format!("worker-{pid}.md"));
                             std::fs::write(&protocol_path, &prompt).ok();
+                            let path_str = protocol_path.to_string_lossy().to_string();
 
-                            // Defer prompt injection: wait 4s for Claude to start
-                            let inject_at =
-                                std::time::Instant::now() + std::time::Duration::from_secs(4);
-                            self.pending_injections.push((pid, prompt, inject_at));
+                            // Launch claude with protocol in system prompt + kick-off via -p
+                            let launch_cmd = Self::build_claude_launch_cmd(
+                                &path_str,
+                                "You are a WORKER agent. Check your tasks with `void-ctl task list --owner me` and start working.",
+                            );
+                            if let Ok(mut b) = bus_clone.lock() {
+                                let _ = b.inject_bytes(pid, launch_cmd.as_bytes(), None);
+                            }
+                        }
+                    } else if let Some(ref command) = spawn_req.command {
+                        // Non-orchestration spawn: just run the command
+                        let cmd_with_enter = format!("{}\r", command);
+                        if let Ok(mut b) = bus_clone.lock() {
+                            let _ = b.inject_bytes(pid, cmd_with_enter.as_bytes(), None);
                         }
                     }
                 }
@@ -636,29 +660,6 @@ impl eframe::App for VoidApp {
             if let Ok(mut bus) = self.bus.lock() {
                 bus.tick_statuses();
                 bus.tick_tasks();
-            }
-        }
-
-        // Process deferred prompt injections (wait for agent CLI to be ready)
-        {
-            let now = std::time::Instant::now();
-            let ready: Vec<(uuid::Uuid, String)> = self
-                .pending_injections
-                .iter()
-                .filter(|(_, _, when)| now >= *when)
-                .map(|(id, prompt, _)| (*id, prompt.clone()))
-                .collect();
-
-            if !ready.is_empty() {
-                self.pending_injections.retain(|(_, _, when)| now < *when);
-
-                if let Ok(mut bus) = self.bus.lock() {
-                    for (tid, prompt) in ready {
-                        // Inject prompt text + Enter to submit to the agent
-                        let _ = bus.inject_bytes(tid, prompt.as_bytes(), None);
-                        let _ = bus.inject_bytes(tid, b"\r", None);
-                    }
-                }
             }
         }
 
