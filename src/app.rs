@@ -436,8 +436,13 @@ impl VoidApp {
         }
     }
 
-    /// Write a protocol file from Rust and inject env vars into the terminal.
-    /// Cross-platform: writes file via std::fs, uses `set` on Windows / `export` on Unix.
+    /// Inject coordination prompts directly into terminal PTY input.
+    ///
+    /// If an agent (Claude) is already running in the terminal, the prompt
+    /// is injected as text that the agent reads as user input — exactly like
+    /// ClawTeam's tmux paste-buffer approach.
+    ///
+    /// Also writes the protocol to a file so agents can re-read it.
     fn inject_orchestration_prompts(
         &self,
         group_id: uuid::Uuid,
@@ -465,19 +470,11 @@ impl VoidApp {
             .map(|(id, _, title)| (*id, title.clone()))
             .collect();
 
-        // Create protocol directory from Rust (cross-platform)
+        // Write protocol files to disk (so agents can re-read)
         let protocol_dir = std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
         std::fs::create_dir_all(&protocol_dir).ok();
 
         for (tid, role, _title) in &members {
-            let role_str = match role {
-                crate::bus::types::TerminalRole::Orchestrator => "leader",
-                crate::bus::types::TerminalRole::Worker => "worker",
-                crate::bus::types::TerminalRole::Peer => "peer",
-                _ => continue,
-            };
-
-            // 1. Generate the full coordination prompt
             let prompt = match role {
                 crate::bus::types::TerminalRole::Orchestrator => {
                     crate::orchestration::prompt::leader_prompt(
@@ -492,57 +489,22 @@ impl VoidApp {
                 _ => continue,
             };
 
-            // 2. Write protocol file from Rust (no shell commands needed)
+            let role_str = match role {
+                crate::bus::types::TerminalRole::Orchestrator => "leader",
+                crate::bus::types::TerminalRole::Worker => "worker",
+                _ => "peer",
+            };
+
+            // Write to file for future reference
             let protocol_path = protocol_dir.join(format!("{role_str}-{tid}.md"));
             std::fs::write(&protocol_path, &prompt).ok();
-            let protocol_path_str = protocol_path.to_string_lossy().to_string();
 
-            // 3. Inject env vars + display protocol (platform-specific shell commands)
-            let commands = Self::build_env_inject_commands(
-                team_name,
-                role_str,
-                &group_id.to_string(),
-                &protocol_path_str,
-            );
-            let _ = bus.inject_bytes(*tid, commands.as_bytes(), None);
-        }
-    }
-
-    /// Build shell commands to set env vars and display the protocol file.
-    /// Returns the right syntax for the current platform.
-    fn build_env_inject_commands(
-        team_name: &str,
-        role: &str,
-        group_id: &str,
-        protocol_path: &str,
-    ) -> String {
-        if cfg!(windows) {
-            // Windows CMD
-            format!(
-                concat!(
-                    "set VOID_TEAM_NAME={team}\r",
-                    "set VOID_ROLE={role}\r",
-                    "set VOID_GROUP_ID={gid}\r",
-                    "set VOID_ORCHESTRATION_PROTOCOL={path}\r",
-                    "type \"{path}\"\r",
-                ),
-                team = team_name,
-                role = role,
-                gid = group_id,
-                path = protocol_path,
-            )
-        } else {
-            // Unix bash/zsh
-            format!(
-                concat!(
-                    "export VOID_TEAM_NAME={team} VOID_ROLE={role} VOID_GROUP_ID={gid} VOID_ORCHESTRATION_PROTOCOL='{path}'\r",
-                    "cat '{path}'\r",
-                ),
-                team = team_name,
-                role = role,
-                gid = group_id,
-                path = protocol_path,
-            )
+            // Inject the prompt directly into the PTY as text input.
+            // If Claude is running, it reads this as a user message.
+            // If a shell is running, it appears as pasted text (harmless comments).
+            let _ = bus.inject_bytes(*tid, prompt.as_bytes(), None);
+            // Send Enter twice to confirm (like ClawTeam's double-Enter)
+            let _ = bus.inject_bytes(*tid, b"\r\r", None);
         }
     }
 
@@ -666,7 +628,7 @@ impl eframe::App for VoidApp {
                             let group_id = session.group_id;
                             let bus_port = self.bus_port;
 
-                            // Write protocol file from Rust
+                            // Write protocol file + inject prompt into PTY
                             let protocol_dir =
                                 std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
                             std::fs::create_dir_all(&protocol_dir).ok();
@@ -676,17 +638,12 @@ impl eframe::App for VoidApp {
                             );
                             let protocol_path = protocol_dir.join(format!("worker-{pid}.md"));
                             std::fs::write(&protocol_path, &prompt).ok();
-                            let path_str = protocol_path.to_string_lossy().to_string();
 
-                            // Inject env vars + display
-                            let commands = Self::build_env_inject_commands(
-                                &team_name,
-                                "worker",
-                                &group_id.to_string(),
-                                &path_str,
-                            );
+                            // Inject prompt directly into PTY.
+                            // The prompt gets buffered; when claude starts, it reads it.
                             if let Ok(mut b) = bus_clone.lock() {
-                                let _ = b.inject_bytes(pid, commands.as_bytes(), None);
+                                let _ = b.inject_bytes(pid, prompt.as_bytes(), None);
+                                let _ = b.inject_bytes(pid, b"\r\r", None);
                             }
                         }
                     }
