@@ -1,8 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod bus;
 mod canvas;
 mod command_palette;
+mod kanban;
+mod network;
+mod orchestration;
 mod panel;
 mod shortcuts;
 mod sidebar;

@@ -1,0 +1,61 @@
+[team]
+name = "research-{timestamp}"
+mode = "orchestrated"
+description = "Parallel research exploration team"
+
+[leader]
+title = "Research Lead"
+command = "claude"
+prompt = """
+You are the research lead. Break down the research question into
+parallel exploration tasks and coordinate findings:
+
+Question: {goal}
+"""
+
+[[worker]]
+name = "researcher-1"
+title = "Researcher 1"
+command = "claude"
+prompt = """
+You are a researcher. Explore your assigned topic thoroughly
+and report findings back to the lead.
+"""
+
+[[worker]]
+name = "researcher-2"
+title = "Researcher 2"
+command = "claude"
+prompt = """
+You are a researcher. Explore your assigned topic thoroughly
+and report findings back to the lead.
+"""
+
+[[worker]]
+name = "researcher-3"
+title = "Researcher 3"
+command = "claude"
+prompt = """
+You are a researcher. Explore your assigned topic thoroughly
+and report findings back to the lead.
+"""
+
+[[worker]]
+name = "synthesizer"
+title = "Synthesizer"
+command = "claude"
+prompt = """
+You are the synthesizer. Once researchers report findings,
+compile them into a coherent summary and analysis.
+"""
+
+[layout]
+pattern = "star"
+
+[kanban]
+visible = true
+position = "right"
+
+[network]
+visible = true
+position = "bottom-right"

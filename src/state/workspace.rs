@@ -2,9 +2,12 @@
 
 use egui::Vec2;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+use crate::bus::TerminalBus;
 use crate::canvas::config::{DEFAULT_PANEL_HEIGHT, DEFAULT_PANEL_WIDTH, PANEL_GAP};
+use crate::orchestration::OrchestrationSession;
 use crate::panel::CanvasPanel;
 use crate::terminal::panel::TerminalPanel;
 
@@ -18,6 +21,12 @@ pub struct Workspace {
     pub viewport_zoom: f32,
     pub next_z: u32,
     pub next_color: usize,
+
+    /// Whether orchestration mode is active in this workspace.
+    pub orchestration_enabled: bool,
+
+    /// Active orchestration session info (populated when enabled).
+    pub orchestration: Option<OrchestrationSession>,
 }
 
 impl Workspace {
@@ -32,6 +41,8 @@ impl Workspace {
             viewport_zoom: 0.75,
             next_z: 0,
             next_color: 0,
+            orchestration_enabled: false,
+            orchestration: None,
         }
     }
 
@@ -40,6 +51,7 @@ impl Workspace {
         ctx: &egui::Context,
         state: &crate::state::persistence::WorkspaceState,
         colors: &[egui::Color32],
+        bus: Option<Arc<Mutex<TerminalBus>>>,
     ) -> Self {
         let cwd = state.cwd.clone();
         let mut ws = Self {
@@ -51,28 +63,40 @@ impl Workspace {
             viewport_zoom: state.viewport_zoom,
             next_z: state.next_z,
             next_color: state.next_color,
+            orchestration_enabled: false,
+            orchestration: None,
         };
 
         for panel_state in &state.panels {
-            let panel = TerminalPanel::from_saved(ctx, panel_state, cwd.as_deref());
+            let panel = TerminalPanel::from_saved(ctx, panel_state, cwd.as_deref(), bus.clone());
+            // Register with bus
+            if let Some(ref bus) = bus {
+                if let Some(pty) = panel.pty_handle() {
+                    let handle = pty.create_bus_handle(panel.id, ws.id);
+                    if let Ok(mut b) = bus.lock() {
+                        b.register(handle);
+                    }
+                }
+            }
             ws.panels.push(CanvasPanel::Terminal(panel));
         }
 
         // If no panels were restored, spawn a default one
         if ws.panels.is_empty() {
-            ws.spawn_terminal(ctx, colors);
+            ws.spawn_terminal(ctx, colors, bus);
         }
 
         ws
     }
 
     /// Snapshot the workspace layout for persistence.
+    /// Kanban and Network panels are not persisted (return None from to_saved).
     pub fn to_saved(&self) -> crate::state::persistence::WorkspaceState {
         crate::state::persistence::WorkspaceState {
             id: self.id.to_string(),
             name: self.name.clone(),
             cwd: self.cwd.clone(),
-            panels: self.panels.iter().map(|p| p.to_saved()).collect(),
+            panels: self.panels.iter().filter_map(|p| p.to_saved()).collect(),
             viewport_pan: [self.viewport_pan.x, self.viewport_pan.y],
             viewport_zoom: self.viewport_zoom,
             next_z: self.next_z,
@@ -89,7 +113,12 @@ impl Workspace {
         self.next_z += 1;
     }
 
-    pub fn spawn_terminal(&mut self, ctx: &egui::Context, colors: &[egui::Color32]) {
+    pub fn spawn_terminal(
+        &mut self,
+        ctx: &egui::Context,
+        colors: &[egui::Color32],
+        bus: Option<Arc<Mutex<TerminalBus>>>,
+    ) {
         let color = colors[self.next_color % colors.len()];
         self.next_color += 1;
 
@@ -101,11 +130,27 @@ impl Workspace {
             p.set_focused(false);
         }
 
-        let mut panel =
-            TerminalPanel::new_with_terminal(ctx, position, new_size, color, self.cwd.as_deref());
+        let mut panel = TerminalPanel::new_with_terminal(
+            ctx,
+            position,
+            new_size,
+            color,
+            self.cwd.as_deref(),
+            bus.clone(),
+        );
         panel.z_index = self.next_z;
         panel.focused = true;
         self.next_z += 1;
+
+        // Register with bus
+        if let Some(ref bus) = bus {
+            if let Some(pty) = panel.pty_handle() {
+                let handle = pty.create_bus_handle(panel.id, self.id);
+                if let Ok(mut b) = bus.lock() {
+                    b.register(handle);
+                }
+            }
+        }
 
         self.panels.push(CanvasPanel::Terminal(panel));
     }
@@ -228,9 +273,23 @@ impl Workspace {
             .any(|r| candidate.expand(half).intersects(r.expand(half)))
     }
 
+    #[allow(dead_code)]
     pub fn close_panel(&mut self, idx: usize) {
+        self.close_panel_with_bus(idx, None);
+    }
+
+    pub fn close_panel_with_bus(&mut self, idx: usize, bus: Option<&Arc<Mutex<TerminalBus>>>) {
         if idx < self.panels.len() {
+            let panel_id = self.panels[idx].id();
             let was_focused = self.panels[idx].focused();
+
+            // Deregister from bus before removing
+            if let Some(bus) = bus {
+                if let Ok(mut b) = bus.lock() {
+                    b.deregister(panel_id);
+                }
+            }
+
             self.panels.remove(idx);
             if was_focused {
                 if let Some(last) = self.panels.last_mut() {
@@ -240,9 +299,14 @@ impl Workspace {
         }
     }
 
+    #[allow(dead_code)]
     pub fn close_focused(&mut self) {
+        self.close_focused_with_bus(None);
+    }
+
+    pub fn close_focused_with_bus(&mut self, bus: Option<&Arc<Mutex<TerminalBus>>>) {
         if let Some(idx) = self.panels.iter().position(|p| p.focused()) {
-            self.close_panel(idx);
+            self.close_panel_with_bus(idx, bus);
         }
     }
 

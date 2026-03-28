@@ -1,6 +1,19 @@
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use eframe::egui;
 use egui::{Color32, Pos2, Vec2};
 
+/// A byte injection scheduled for a future time.
+#[derive(Clone)]
+struct DelayedInjection {
+    terminal_id: uuid::Uuid,
+    bytes: Vec<u8>,
+    fire_at: Instant,
+}
+
+use crate::bus::TerminalBus;
+use crate::canvas::edges::CanvasEdgeOverlay;
 use crate::canvas::viewport::Viewport;
 use crate::command_palette::commands::Command;
 use crate::command_palette::CommandPalette;
@@ -35,6 +48,16 @@ pub struct VoidApp {
     brand_texture: egui::TextureHandle,
     sidebar: Sidebar,
     update_checker: UpdateChecker,
+    bus: Arc<Mutex<TerminalBus>>,
+    #[allow(dead_code)]
+    bus_port: u16,
+    edge_overlay: CanvasEdgeOverlay,
+    edge_subscription: Option<(
+        uuid::Uuid,
+        std::sync::mpsc::Receiver<crate::bus::types::BusEvent>,
+    )>,
+    /// Delayed byte injections — fired when `fire_at` is reached.
+    delayed_injections: Vec<DelayedInjection>,
 }
 
 impl VoidApp {
@@ -55,13 +78,19 @@ impl VoidApp {
             )
         };
 
+        let bus = Arc::new(Mutex::new(TerminalBus::new()));
+        let bus_port = crate::bus::server::start_bus_server(bus.clone());
+        std::env::set_var("VOID_BUS_PORT", bus_port.to_string());
+
         // Try to restore saved layout, otherwise create a default workspace
         let (workspaces, active_ws, sidebar_visible, show_grid, show_minimap, viewport) =
             if let Some(saved) = crate::state::persistence::load_state() {
                 let wss: Vec<Workspace> = saved
                     .workspaces
                     .iter()
-                    .map(|ws_state| Workspace::from_saved(&ctx, ws_state, PANEL_COLORS))
+                    .map(|ws_state| {
+                        Workspace::from_saved(&ctx, ws_state, PANEL_COLORS, Some(bus.clone()))
+                    })
                     .collect();
                 let active = saved.active_ws.min(wss.len().saturating_sub(1));
                 let vp = Viewport {
@@ -78,7 +107,7 @@ impl VoidApp {
                 )
             } else {
                 let mut ws = Workspace::new("Default", None);
-                ws.spawn_terminal(&ctx, PANEL_COLORS);
+                ws.spawn_terminal(&ctx, PANEL_COLORS, Some(bus.clone()));
                 (
                     vec![ws],
                     0,
@@ -106,6 +135,11 @@ impl VoidApp {
             brand_texture,
             sidebar: Sidebar::default(),
             update_checker: UpdateChecker::new(cc.egui_ctx.clone()),
+            bus,
+            bus_port,
+            edge_overlay: CanvasEdgeOverlay::new(),
+            edge_subscription: None,
+            delayed_injections: Vec::new(),
         }
     }
 
@@ -190,7 +224,7 @@ impl VoidApp {
 
             let mut ws = Workspace::new(name, Some(path));
             if let Some(ctx) = &self.ctx {
-                ws.spawn_terminal(ctx, PANEL_COLORS);
+                ws.spawn_terminal(ctx, PANEL_COLORS, Some(self.bus.clone()));
             }
 
             self.workspaces.push(ws);
@@ -201,14 +235,18 @@ impl VoidApp {
 
     fn spawn_terminal(&mut self) {
         if let Some(ctx) = self.ctx.clone() {
-            self.ws_mut().spawn_terminal(&ctx, PANEL_COLORS);
+            let bus = self.bus.clone();
+            self.ws_mut().spawn_terminal(&ctx, PANEL_COLORS, Some(bus));
         }
     }
 
     fn execute_command(&mut self, cmd: Command, ctx: &egui::Context, screen_rect: egui::Rect) {
         match cmd {
             Command::NewTerminal => self.spawn_terminal(),
-            Command::CloseTerminal => self.ws_mut().close_focused(),
+            Command::CloseTerminal => {
+                let bus = self.bus.clone();
+                self.ws_mut().close_focused_with_bus(Some(&bus));
+            }
             Command::RenameTerminal => {
                 let found = self
                     .ws()
@@ -236,6 +274,31 @@ impl VoidApp {
             Command::ToggleFullscreen => {
                 let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+            }
+            Command::ToggleOrchestration => {
+                self.toggle_orchestration();
+            }
+            Command::SpawnWorker => {
+                self.spawn_terminal();
+                if let Some(ref session) = self.ws().orchestration {
+                    let group_id = session.group_id;
+                    if let Some(panel) = self.ws().panels.last() {
+                        let panel_id = panel.id();
+                        if let Ok(mut b) = self.bus.lock() {
+                            let _ = b.join_group(panel_id, group_id);
+                        }
+                    }
+                }
+            }
+            Command::ShowKanban => {
+                if let Some(ref mut session) = self.ws_mut().orchestration {
+                    session.kanban_visible = !session.kanban_visible;
+                }
+            }
+            Command::ShowNetwork => {
+                if let Some(ref mut session) = self.ws_mut().orchestration {
+                    session.network_visible = !session.network_visible;
+                }
             }
         }
     }
@@ -267,6 +330,195 @@ impl VoidApp {
             Pos2::new((min.x + max.x) / 2.0, (min.y + max.y) / 2.0),
             screen_rect,
         );
+    }
+
+    fn toggle_orchestration(&mut self) {
+        let is_enabled = self.workspaces[self.active_ws].orchestration_enabled;
+        if is_enabled {
+            // Disable: dissolve group, remove kanban/network panels
+            let group_id = self.workspaces[self.active_ws]
+                .orchestration
+                .as_ref()
+                .map(|s| s.group_id);
+            if let Some(gid) = group_id {
+                if let Ok(mut b) = self.bus.lock() {
+                    b.dissolve_group(gid);
+                }
+            }
+            let kanban_id = self.workspaces[self.active_ws]
+                .orchestration
+                .as_ref()
+                .and_then(|s| s.kanban_panel_id);
+            let network_id = self.workspaces[self.active_ws]
+                .orchestration
+                .as_ref()
+                .and_then(|s| s.network_panel_id);
+            self.workspaces[self.active_ws]
+                .panels
+                .retain(|p| Some(p.id()) != kanban_id && Some(p.id()) != network_id);
+            self.workspaces[self.active_ws].orchestration_enabled = false;
+            self.workspaces[self.active_ws].orchestration = None;
+            self.edge_overlay.enabled = false;
+            // Unsubscribe edge overlay from bus events
+            if let Some((sub_id, _)) = self.edge_subscription.take() {
+                if let Ok(mut b) = self.bus.lock() {
+                    b.unsubscribe(sub_id);
+                }
+            }
+        } else {
+            // Enable orchestration: spawn leader terminal + launch claude automatically
+            //
+            // Flow (like ClawTeam):
+            // 1. Spawn a new terminal panel for the leader
+            // 2. Launch "claude" in it
+            // 3. Wait ~4s for Claude to start
+            // 4. Inject the leader prompt (deferred)
+            // 5. Any existing terminals join as workers
+
+            // Spawn leader terminal
+            self.spawn_terminal();
+            let leader = match self.workspaces[self.active_ws].panels.last() {
+                Some(p) => p.id(),
+                None => return,
+            };
+
+            let group_name = format!("team-{}", self.workspaces[self.active_ws].panels.len());
+            let group_id = {
+                let mut b = self.bus.lock().unwrap();
+                match b.create_orchestrated_group(&group_name, leader) {
+                    Ok(gid) => {
+                        // Join existing terminals as workers
+                        let other_ids: Vec<uuid::Uuid> = self.workspaces[self.active_ws]
+                            .panels
+                            .iter()
+                            .filter(|p| p.id() != leader)
+                            .filter(|p| matches!(p, crate::panel::CanvasPanel::Terminal(_)))
+                            .map(|p| p.id())
+                            .collect();
+                        for tid in other_ids {
+                            let _ = b.join_group(tid, gid);
+                        }
+                        gid
+                    }
+                    Err(_) => return,
+                }
+            };
+
+            // Step 1: Launch claude in interactive mode
+            {
+                let mut b = self.bus.lock().unwrap();
+                let _ = b.inject_bytes(leader, b"claude --dangerously-skip-permissions\r", None);
+            }
+            // Step 2: Inject the leader prompt after Claude boots (~5 seconds)
+            let prompt = Self::leader_prompt_text(leader, &group_name);
+            self.delayed_injections.push(DelayedInjection {
+                terminal_id: leader,
+                bytes: format!("{}\n", prompt).into_bytes(),
+                fire_at: Instant::now() + std::time::Duration::from_secs(5),
+            });
+
+            // Position kanban to the right of terminal cluster
+            let aws = self.active_ws;
+            let max_x = self.workspaces[aws]
+                .panels
+                .iter()
+                .map(|p| p.rect().max.x)
+                .fold(f32::MIN, f32::max);
+            let min_y = self.workspaces[aws]
+                .panels
+                .iter()
+                .map(|p| p.rect().min.y)
+                .fold(f32::MAX, f32::min);
+
+            let kanban_pos = Pos2::new(max_x + 40.0, min_y);
+            let mut kanban = crate::kanban::KanbanPanel::new(kanban_pos, group_id);
+            kanban.z_index = self.workspaces[aws].next_z;
+            self.workspaces[aws].next_z += 1;
+            let kanban_id = kanban.id;
+
+            let network_pos = Pos2::new(max_x + 40.0, min_y + 520.0);
+            let (sub_id, event_rx) = {
+                let mut b = self.bus.lock().unwrap();
+                let filter = crate::bus::types::EventFilter {
+                    group_id: Some(group_id),
+                    ..Default::default()
+                };
+                b.subscribe(filter)
+            };
+            let mut network =
+                crate::network::NetworkPanel::new(network_pos, group_id, sub_id, event_rx);
+            network.z_index = self.workspaces[aws].next_z;
+            self.workspaces[aws].next_z += 1;
+            let network_id = network.id;
+
+            let mut session = crate::orchestration::OrchestrationSession::new(
+                group_id,
+                group_name.clone(),
+                Some(leader),
+            );
+            session.kanban_panel_id = Some(kanban_id);
+            session.network_panel_id = Some(network_id);
+
+            self.workspaces[aws]
+                .panels
+                .push(crate::panel::CanvasPanel::Kanban(kanban));
+            self.workspaces[aws]
+                .panels
+                .push(crate::panel::CanvasPanel::Network(network));
+            self.workspaces[aws].orchestration_enabled = true;
+            self.workspaces[aws].orchestration = Some(session);
+            self.edge_overlay.enabled = true;
+
+            // Subscribe edge overlay to bus events
+            let (sub_id, rx) = {
+                let mut b = self.bus.lock().unwrap();
+                b.subscribe(crate::bus::types::EventFilter::default())
+            };
+            self.edge_subscription = Some((sub_id, rx));
+        }
+    }
+
+    /// Build the leader prompt text (injected into Claude's TUI after it starts).
+    fn leader_prompt_text(leader_id: uuid::Uuid, team_name: &str) -> String {
+        format!(
+            "You are the LEADER of team {team}. Your ID: {id}.\n\
+             \n\
+             Available void-ctl commands (run them in bash):\n\
+             - void-ctl spawn → create a new worker terminal (auto-launches Claude)\n\
+             - void-ctl list → see all terminals with IDs\n\
+             - void-ctl task create \"subject\" --assign WORKER_ID → assign work\n\
+             - void-ctl task list → check task progress\n\
+             - void-ctl read WORKER_ID --lines 50 → read worker output\n\
+             - void-ctl message send WORKER_ID \"msg\" → send message\n\
+             - void-ctl context set key value → share data with team\n\
+             - void-ctl task wait --all → wait for all tasks to finish\n\
+             \n\
+             START NOW:\n\
+             1. Run: void-ctl spawn (creates a worker with Claude)\n\
+             2. Run: void-ctl list (to see the worker's ID)\n\
+             3. Then ask me what to build and create tasks for the worker.",
+            team = team_name,
+            id = leader_id,
+        )
+    }
+
+    /// Build the worker prompt text (injected into Claude's TUI after it starts).
+    fn worker_prompt_text(worker_id: uuid::Uuid, leader_id: uuid::Uuid) -> String {
+        format!(
+            "You are a WORKER agent. Your ID: {wid}. Leader ID: {lid}.\n\
+             \n\
+             Available void-ctl commands (run them in bash):\n\
+             - void-ctl task list --owner me → check your assigned tasks\n\
+             - void-ctl task update TASK_ID --status in_progress → start a task\n\
+             - void-ctl task update TASK_ID --status completed --result \"summary\" → finish task\n\
+             - void-ctl message send {lid} \"msg\" → message the leader\n\
+             - void-ctl context get key → read shared data\n\
+             \n\
+             START: run void-ctl task list --owner me and work on your tasks.\n\
+             After completing each task, check for new ones. Keep working until no tasks remain.",
+            wid = worker_id,
+            lid = leader_id,
+        )
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> Option<Command> {
@@ -349,6 +601,119 @@ impl eframe::App for VoidApp {
 
         if let Some(cmd) = self.handle_shortcuts(ctx) {
             self.execute_command(cmd, ctx, canvas_rect_for_commands);
+        }
+
+        // Process pending bus actions (spawn/close from void-ctl)
+        {
+            let bus_clone = self.bus.clone();
+            let (spawns, closes) = {
+                let mut bus = bus_clone.lock().unwrap();
+                let s = std::mem::take(&mut bus.pending_spawns);
+                let c = std::mem::take(&mut bus.pending_closes);
+                (s, c)
+            };
+            for spawn_req in spawns {
+                self.spawn_terminal();
+                let panel_id = self.ws().panels.last().map(|p| p.id());
+
+                if let Some(pid) = panel_id {
+                    // Auto-join group if requested
+                    if let Some(ref group_name) = spawn_req.group_name {
+                        if let Ok(mut b) = bus_clone.lock() {
+                            let _ = b.join_group_by_name(pid, group_name);
+                        }
+                    }
+
+                    // If in a group, launch claude + inject worker prompt after delay
+                    if spawn_req.group_name.is_some() {
+                        if let Some(ref session) = self.ws().orchestration {
+                            let leader_id = session.leader_id.unwrap_or(pid);
+
+                            // Step 1: Launch claude in interactive mode
+                            if let Ok(mut b) = bus_clone.lock() {
+                                let _ = b.inject_bytes(
+                                    pid,
+                                    b"claude --dangerously-skip-permissions\r",
+                                    None,
+                                );
+                            }
+                            // Step 2: Inject worker prompt after Claude boots
+                            let prompt = Self::worker_prompt_text(pid, leader_id);
+                            self.delayed_injections.push(DelayedInjection {
+                                terminal_id: pid,
+                                bytes: format!("{}\n", prompt).into_bytes(),
+                                fire_at: Instant::now() + std::time::Duration::from_secs(5),
+                            });
+                        }
+                    } else if let Some(ref command) = spawn_req.command {
+                        // Non-orchestration spawn: just run the command
+                        let cmd_with_enter = format!("{}\r", command);
+                        if let Ok(mut b) = bus_clone.lock() {
+                            let _ = b.inject_bytes(pid, cmd_with_enter.as_bytes(), None);
+                        }
+                    }
+                }
+            }
+            for close_id in closes {
+                let idx = self.ws().panels.iter().position(|p| p.id() == close_id);
+                if let Some(idx) = idx {
+                    let bus = self.bus.clone();
+                    self.ws_mut().close_panel_with_bus(idx, Some(&bus));
+                }
+            }
+        }
+
+        // Tick bus tasks and statuses
+        {
+            if let Ok(mut bus) = self.bus.lock() {
+                bus.tick_statuses();
+                bus.tick_tasks();
+            }
+        }
+
+        // Fire delayed injections that are due
+        {
+            let now = Instant::now();
+            let ready: Vec<DelayedInjection> = self
+                .delayed_injections
+                .iter()
+                .filter(|d| now >= d.fire_at)
+                .cloned()
+                .collect();
+            self.delayed_injections.retain(|d| now < d.fire_at);
+            if let Ok(mut b) = self.bus.lock() {
+                for d in ready {
+                    let _ = b.inject_bytes(d.terminal_id, &d.bytes, None);
+                }
+            }
+        }
+
+        // Sync kanban and network panels from bus
+        {
+            let bus = self.bus.clone();
+            let guard = bus.lock();
+            if let Ok(ref b) = guard {
+                let ws = &mut self.workspaces[self.active_ws];
+                for panel in &mut ws.panels {
+                    match panel {
+                        crate::panel::CanvasPanel::Kanban(k) => k.sync_from_bus(b),
+                        crate::panel::CanvasPanel::Network(n) => n.sync_nodes(b),
+                        _ => {}
+                    }
+                }
+            }
+            drop(guard);
+        }
+
+        // Tick edge overlay + feed events
+        {
+            let dt = ctx.input(|i| i.stable_dt).min(0.1);
+            if let Some((_, ref rx)) = self.edge_subscription {
+                while let Ok(event) = rx.try_recv() {
+                    self.edge_overlay.on_event(&event);
+                }
+            }
+            self.edge_overlay.tick(dt);
         }
 
         // Sync titles
@@ -459,6 +824,17 @@ impl eframe::App for VoidApp {
                             }
                             SidebarResponse::DeleteWorkspace(idx) => {
                                 if self.workspaces.len() > 1 {
+                                    // Deregister all terminals in the workspace from the bus
+                                    let panel_ids: Vec<uuid::Uuid> = self.workspaces[idx]
+                                        .panels
+                                        .iter()
+                                        .map(|p| p.id())
+                                        .collect();
+                                    if let Ok(mut b) = self.bus.lock() {
+                                        for id in panel_ids {
+                                            b.deregister(id);
+                                        }
+                                    }
                                     self.workspaces.remove(idx);
                                     if self.active_ws >= self.workspaces.len() {
                                         self.active_ws = self.workspaces.len() - 1;
@@ -503,7 +879,34 @@ impl eframe::App for VoidApp {
                                 }
                             }
                             SidebarResponse::ClosePanel(idx) => {
-                                self.ws_mut().close_panel(idx);
+                                let bus = self.bus.clone();
+                                self.ws_mut().close_panel_with_bus(idx, Some(&bus));
+                            }
+                            SidebarResponse::ToggleOrchestration => {
+                                self.toggle_orchestration();
+                            }
+                            SidebarResponse::SpawnWorker => {
+                                self.spawn_terminal();
+                                // Join the worker to the orchestration group
+                                if let Some(ref session) = self.ws().orchestration {
+                                    let group_id = session.group_id;
+                                    if let Some(panel) = self.ws().panels.last() {
+                                        let panel_id = panel.id();
+                                        if let Ok(mut b) = self.bus.lock() {
+                                            let _ = b.join_group(panel_id, group_id);
+                                        }
+                                    }
+                                }
+                            }
+                            SidebarResponse::ToggleKanban => {
+                                if let Some(ref mut session) = self.ws_mut().orchestration {
+                                    session.kanban_visible = !session.kanban_visible;
+                                }
+                            }
+                            SidebarResponse::ToggleNetwork => {
+                                if let Some(ref mut session) = self.ws_mut().orchestration {
+                                    session.network_visible = !session.network_visible;
+                                }
                             }
                         }
                     }
@@ -617,11 +1020,38 @@ impl eframe::App for VoidApp {
                 ui.set_clip_rect(clip);
                 ui.allocate_rect(clip, egui::Sense::hover());
 
+                // Draw edge overlay (between panels, below panel content)
+                if self.edge_overlay.enabled {
+                    let panel_rects: std::collections::HashMap<uuid::Uuid, egui::Rect> = self
+                        .ws()
+                        .panels
+                        .iter()
+                        .filter(|p| matches!(p, crate::panel::CanvasPanel::Terminal(_)))
+                        .map(|p| (p.id(), p.rect()))
+                        .collect();
+                    self.edge_overlay
+                        .draw(ui.painter(), &panel_rects, transform);
+                }
+
                 let mut order: Vec<usize> = (0..self.ws().panels.len()).collect();
                 order.sort_by_key(|&i| self.ws().panels[i].z_index());
 
+                // Check orchestration visibility flags for kanban/network
+                let (kanban_hidden, network_hidden) = self
+                    .ws()
+                    .orchestration
+                    .as_ref()
+                    .map(|s| (!s.kanban_visible, !s.network_visible))
+                    .unwrap_or((false, false));
+
                 let mut interactions = Vec::new();
                 for &idx in &order {
+                    // Skip hidden kanban/network panels
+                    match &self.ws().panels[idx] {
+                        crate::panel::CanvasPanel::Kanban(_) if kanban_hidden => continue,
+                        crate::panel::CanvasPanel::Network(_) if network_hidden => continue,
+                        _ => {}
+                    }
                     if !self
                         .viewport
                         .is_visible(self.ws().panels[idx].rect(), canvas_rect)
@@ -737,6 +1167,16 @@ impl eframe::App for VoidApp {
                                 self.renaming_panel = Some(self.ws().panels[*idx].id());
                                 self.rename_buf = self.ws().panels[*idx].title().to_string();
                             }
+                            PanelAction::FocusPanel(target_id) => {
+                                // Focus the target terminal panel (from kanban card double-click
+                                // or network node click)
+                                let target = *target_id;
+                                if let Some(focus_idx) =
+                                    self.ws().panels.iter().position(|p| p.id() == target)
+                                {
+                                    self.ws_mut().bring_to_front(focus_idx);
+                                }
+                            }
                         }
                     }
                 }
@@ -753,8 +1193,9 @@ impl eframe::App for VoidApp {
                 }
 
                 to_close.sort_unstable();
+                let bus = self.bus.clone();
                 for idx in to_close.into_iter().rev() {
-                    self.ws_mut().close_panel(idx);
+                    self.ws_mut().close_panel_with_bus(idx, Some(&bus));
                 }
 
                 // Unfocus all panels when clicking empty canvas

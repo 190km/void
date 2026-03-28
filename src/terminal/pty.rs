@@ -61,6 +61,24 @@ pub struct PtyHandle {
 }
 
 impl PtyHandle {
+    /// Create a bus handle from this PtyHandle's Arc fields.
+    pub fn create_bus_handle(
+        &self,
+        id: uuid::Uuid,
+        workspace_id: uuid::Uuid,
+    ) -> crate::bus::types::TerminalHandle {
+        crate::bus::types::TerminalHandle {
+            id,
+            term: self.term.clone(),
+            writer: self.writer.clone(),
+            title: self.title.clone(),
+            alive: self.alive.clone(),
+            last_input_at: self.last_input_at.clone(),
+            last_output_at: self.last_output_at.clone(),
+            workspace_id,
+        }
+    }
+
     /// Spawn a new terminal with a shell process.
     pub fn spawn(
         ctx: &egui::Context,
@@ -68,6 +86,8 @@ impl PtyHandle {
         cols: u16,
         title: &str,
         cwd: Option<&std::path::Path>,
+        terminal_id: uuid::Uuid,
+        bus: Option<Arc<Mutex<crate::bus::TerminalBus>>>,
     ) -> anyhow::Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
@@ -82,6 +102,35 @@ impl PtyHandle {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("VOID_TERMINAL", "1");
+        cmd.env("VOID_TERMINAL_ID", terminal_id.to_string());
+        // VOID_BUS_PORT is set in the process env by VoidApp::new()
+        if let Ok(port) = std::env::var("VOID_BUS_PORT") {
+            cmd.env("VOID_BUS_PORT", port);
+        }
+        // Ensure void-ctl is in PATH: add the directory containing the void binary
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let mut path = std::env::var("PATH").unwrap_or_default();
+                let separator = if cfg!(windows) { ";" } else { ":" };
+                if !path.contains(&exe_dir.to_string_lossy().to_string()) {
+                    path = format!("{}{}{}", exe_dir.to_string_lossy(), separator, path);
+                    cmd.env("PATH", path);
+                }
+            }
+        }
+        // Orchestration env vars (set when orchestration mode is active)
+        if let Ok(v) = std::env::var("VOID_TEAM_NAME") {
+            cmd.env("VOID_TEAM_NAME", v);
+        }
+        if let Ok(v) = std::env::var("VOID_ROLE") {
+            cmd.env("VOID_ROLE", v);
+        }
+        if let Ok(v) = std::env::var("VOID_GROUP_ID") {
+            cmd.env("VOID_GROUP_ID", v);
+        }
+        if let Ok(v) = std::env::var("VOID_ORCHESTRATION_PROTOCOL") {
+            cmd.env("VOID_ORCHESTRATION_PROTOCOL", v);
+        }
         if let Some(dir) = cwd {
             cmd.cwd(dir);
         }
@@ -174,20 +223,45 @@ impl PtyHandle {
             }
         });
 
+        let bus_clone = bus.clone();
+        let writer_for_apc = writer.clone();
         let reader_thread = thread::spawn(move || {
             let mut processor: Processor = Processor::new();
             let mut buf = [0u8; 4096];
+            let mut apc_accum = Vec::new();
 
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        // Extract APC VOID commands before feeding to VTE parser
+                        let (filtered, apc_commands) =
+                            crate::bus::apc::extract_void_commands(&buf[..n], &mut apc_accum);
+                        let bytes_for_parser = if apc_commands.is_empty() {
+                            &buf[..n]
+                        } else {
+                            &filtered
+                        };
+
+                        // Process APC commands
+                        if let Some(ref bus) = bus_clone {
+                            for cmd in &apc_commands {
+                                let response =
+                                    crate::bus::apc::handle_bus_command(cmd, terminal_id, bus);
+                                // Write response back to PTY
+                                if let Ok(mut w) = writer_for_apc.lock() {
+                                    let _ = w.write_all(&response);
+                                    let _ = w.flush();
+                                }
+                            }
+                        }
+
                         // Feed bytes to terminal parser
-                        {
+                        if !bytes_for_parser.is_empty() {
                             let Ok(mut term) = term_clone.lock() else {
                                 break;
                             };
-                            processor.advance(&mut *term, &buf[..n]);
+                            processor.advance(&mut *term, bytes_for_parser);
                         }
                         if let Ok(mut last_output) = last_output_clone.lock() {
                             *last_output = Instant::now();

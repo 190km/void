@@ -50,6 +50,10 @@ pub enum SidebarResponse {
     SpawnTerminal,
     RenamePanel(Uuid),
     ClosePanel(usize),
+    ToggleOrchestration,
+    SpawnWorker,
+    ToggleKanban,
+    ToggleNetwork,
 }
 
 pub struct Sidebar {
@@ -215,6 +219,106 @@ impl Sidebar {
                             ui,
                             &workspaces[active_ws].panels,
                         ));
+
+                        // ── Orchestration Section ──────────────────────
+                        ui.add_space(8.0);
+                        {
+                            let available_width = ui.available_width();
+                            let divider_rect = ui.allocate_space(Vec2::new(available_width, 1.0));
+                            ui.painter().rect_filled(divider_rect.1, 0.0, DIVIDER);
+                        }
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("ORCHESTRATION")
+                                    .color(TEXT_SECONDARY)
+                                    .size(10.0),
+                            );
+                        });
+                        ui.add_space(6.0);
+
+                        let orch_enabled = workspaces[active_ws].orchestration_enabled;
+                        let mut toggled = orch_enabled;
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut toggled, "");
+                            ui.label(
+                                egui::RichText::new("Enable Orchestration")
+                                    .color(if orch_enabled { TEXT_PRIMARY } else { TEXT_SECONDARY })
+                                    .size(11.0),
+                            );
+                        });
+                        if toggled != orch_enabled {
+                            responses.push(SidebarResponse::ToggleOrchestration);
+                        }
+
+                        if orch_enabled {
+                            if let Some(ref session) = workspaces[active_ws].orchestration {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(format!("Team: {}", session.group_name))
+                                        .color(TEXT_SECONDARY)
+                                        .size(10.0),
+                                );
+                                ui.label(
+                                    egui::RichText::new("Mode: orchestrated")
+                                        .color(TEXT_SECONDARY)
+                                        .size(10.0),
+                                );
+
+                                ui.add_space(8.0);
+
+                                // Kanban toggle
+                                let mut kanban_vis = session.kanban_visible;
+                                ui.horizontal(|ui| {
+                                    if ui.checkbox(&mut kanban_vis, "").changed() {
+                                        responses.push(SidebarResponse::ToggleKanban);
+                                    }
+                                    ui.label(
+                                        egui::RichText::new("Show Kanban Board")
+                                            .color(TEXT_SECONDARY)
+                                            .size(10.0),
+                                    );
+                                });
+
+                                // Network toggle
+                                let mut network_vis = session.network_visible;
+                                ui.horizontal(|ui| {
+                                    if ui.checkbox(&mut network_vis, "").changed() {
+                                        responses.push(SidebarResponse::ToggleNetwork);
+                                    }
+                                    ui.label(
+                                        egui::RichText::new("Show Network View")
+                                            .color(TEXT_SECONDARY)
+                                            .size(10.0),
+                                    );
+                                });
+
+                                ui.add_space(6.0);
+
+                                // Spawn worker button
+                                let btn = ui.add(
+                                    egui::Button::new(
+                                        egui::RichText::new("+ Spawn Worker")
+                                            .size(10.0)
+                                            .color(TEXT_SECONDARY),
+                                    )
+                                    .fill(ITEM_BG)
+                                    .stroke(egui::Stroke::new(0.5, Color32::from_rgb(55, 55, 60)))
+                                    .rounding(6.0),
+                                );
+                                if btn.clicked() {
+                                    responses.push(SidebarResponse::SpawnWorker);
+                                }
+                            }
+                        } else {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("Enable to create agent teams\nwith task tracking and swarm\nvisualization")
+                                    .color(TEXT_MUTED)
+                                    .size(9.5),
+                            );
+                        }
                     }
                 }
             });

@@ -1,0 +1,34 @@
+[team]
+name = "duo-{timestamp}"
+mode = "orchestrated"
+description = "Simple pair programming — one leader, one worker"
+
+[leader]
+title = "Lead"
+command = "claude"
+prompt = """
+You are the lead developer. Break down the goal into tasks
+and coordinate with your worker to build it:
+
+Goal: {goal}
+"""
+
+[[worker]]
+name = "dev"
+title = "Developer"
+command = "claude"
+prompt = """
+You are a developer. Wait for tasks from the leader.
+Focus on implementation and testing.
+"""
+
+[layout]
+pattern = "star"
+
+[kanban]
+visible = true
+position = "right"
+
+[network]
+visible = true
+position = "bottom-right"

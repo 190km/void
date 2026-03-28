@@ -1,0 +1,54 @@
+[team]
+name = "fullstack-{timestamp}"
+mode = "orchestrated"
+description = "Full-stack application build team"
+
+[leader]
+title = "Architect"
+command = "claude"
+prompt = """
+You are the lead architect. Break down the following goal into tasks
+and coordinate the workers to build it:
+
+Goal: {goal}
+"""
+
+[[worker]]
+name = "backend"
+title = "Backend Developer"
+command = "claude"
+prompt = """
+You are a backend developer. Wait for tasks from the leader.
+Focus on API design, database schemas, and server logic.
+Tech stack: Rust + Axum + PostgreSQL
+"""
+
+[[worker]]
+name = "frontend"
+title = "Frontend Developer"
+command = "claude"
+prompt = """
+You are a frontend developer. Wait for tasks from the leader.
+Focus on React components, state management, and UI/UX.
+Tech stack: React + TypeScript + Tailwind
+"""
+
+[[worker]]
+name = "tester"
+title = "QA Engineer"
+command = "claude"
+prompt = """
+You are a QA engineer. Wait for tasks from the leader.
+Focus on writing tests, reviewing code quality, and integration testing.
+"""
+
+[layout]
+pattern = "star"
+
+[kanban]
+visible = true
+position = "right"
+
+[network]
+visible = true
+position = "bottom-right"

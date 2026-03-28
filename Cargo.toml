@@ -11,9 +11,15 @@ readme = "README.md"
 keywords = ["terminal", "gpu", "canvas", "egui", "wgpu"]
 categories = ["command-line-utilities", "gui"]
 
+default-run = "void"
+
 [[bin]]
 name = "void"
 path = "src/main.rs"
+
+[[bin]]
+name = "void-ctl"
+path = "src/bin/void-ctl.rs"
 
 [dependencies]
 # GUI
