@@ -107,6 +107,17 @@ impl PtyHandle {
         if let Ok(port) = std::env::var("VOID_BUS_PORT") {
             cmd.env("VOID_BUS_PORT", port);
         }
+        // Ensure void-ctl is in PATH: add the directory containing the void binary
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let mut path = std::env::var("PATH").unwrap_or_default();
+                let separator = if cfg!(windows) { ";" } else { ":" };
+                if !path.contains(&exe_dir.to_string_lossy().to_string()) {
+                    path = format!("{}{}{}", exe_dir.to_string_lossy(), separator, path);
+                    cmd.env("PATH", path);
+                }
+            }
+        }
         // Orchestration env vars (set when orchestration mode is active)
         if let Ok(v) = std::env::var("VOID_TEAM_NAME") {
             cmd.env("VOID_TEAM_NAME", v);

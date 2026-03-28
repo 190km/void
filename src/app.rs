@@ -1,7 +1,16 @@
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use eframe::egui;
 use egui::{Color32, Pos2, Vec2};
+
+/// A byte injection scheduled for a future time.
+#[derive(Clone)]
+struct DelayedInjection {
+    terminal_id: uuid::Uuid,
+    bytes: Vec<u8>,
+    fire_at: Instant,
+}
 
 use crate::bus::TerminalBus;
 use crate::canvas::edges::CanvasEdgeOverlay;
@@ -47,6 +56,8 @@ pub struct VoidApp {
         uuid::Uuid,
         std::sync::mpsc::Receiver<crate::bus::types::BusEvent>,
     )>,
+    /// Delayed byte injections — fired when `fire_at` is reached.
+    delayed_injections: Vec<DelayedInjection>,
 }
 
 impl VoidApp {
@@ -128,6 +139,7 @@ impl VoidApp {
             bus_port,
             edge_overlay: CanvasEdgeOverlay::new(),
             edge_subscription: None,
+            delayed_injections: Vec::new(),
         }
     }
 
@@ -392,34 +404,18 @@ impl VoidApp {
                 }
             };
 
-            // Build leader protocol + launch claude with it baked in
-            let workers: Vec<(uuid::Uuid, String)> = Vec::new();
-            let protocol = crate::orchestration::prompt::leader_prompt(
-                leader,
-                &group_name,
-                group_id,
-                &workers,
-                self.bus_port,
-            );
-
-            // Write protocol to temp file — claude reads it via --append-system-prompt
-            let protocol_dir = std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
-            std::fs::create_dir_all(&protocol_dir).ok();
-            let protocol_path = protocol_dir.join(format!("leader-{leader}.md"));
-            std::fs::write(&protocol_path, &protocol).ok();
-            let path_str = protocol_path.to_string_lossy().to_string();
-
-            // Launch claude with protocol in system prompt (invisible) + short kick-off via -p
-            let launch_cmd = Self::build_claude_launch_cmd(
-                &path_str,
-                "You are the LEADER of an orchestration team. \
-                 Use `void-ctl spawn` to create worker agents, then use `void-ctl task create` \
-                 to assign tasks. Start now.",
-            );
+            // Step 1: Launch claude in interactive mode
             {
                 let mut b = self.bus.lock().unwrap();
-                let _ = b.inject_bytes(leader, launch_cmd.as_bytes(), None);
+                let _ = b.inject_bytes(leader, b"claude --dangerously-skip-permissions\r", None);
             }
+            // Step 2: Inject the leader prompt after Claude boots (~5 seconds)
+            let prompt = Self::leader_prompt_text(leader, &group_name);
+            self.delayed_injections.push(DelayedInjection {
+                terminal_id: leader,
+                bytes: format!("{}\n", prompt).into_bytes(),
+                fire_at: Instant::now() + std::time::Duration::from_secs(5),
+            });
 
             // Position kanban to the right of terminal cluster
             let aws = self.active_ws;
@@ -482,28 +478,47 @@ impl VoidApp {
         }
     }
 
-    /// Build the shell command to launch claude with protocol in system prompt.
-    ///
-    /// Uses `--append-system-prompt` (invisible to user) for the full protocol,
-    /// and `-p` for a short kick-off message (the first thing Claude works on).
-    /// Like ClawTeam's approach: protocol is hidden, agent just starts working.
-    fn build_claude_launch_cmd(protocol_file: &str, kickoff_message: &str) -> String {
-        if cfg!(windows) {
-            // Windows: use PowerShell to read the file and pass as argument
-            // Double quotes inside PowerShell args need escaping
-            let escaped_msg = kickoff_message.replace('"', "`\"");
-            format!(
-                "powershell -NoProfile -Command \"claude --dangerously-skip-permissions --append-system-prompt (Get-Content -Raw '{}') -p '{}'\"\r",
-                protocol_file.replace('\'', "''"),
-                escaped_msg.replace('\'', "''"),
-            )
-        } else {
-            // Unix: use $() subshell to read the file
-            format!(
-                "claude --dangerously-skip-permissions --append-system-prompt \"$(cat '{}')\" -p \"{}\"\r",
-                protocol_file, kickoff_message,
-            )
-        }
+    /// Build the leader prompt text (injected into Claude's TUI after it starts).
+    fn leader_prompt_text(leader_id: uuid::Uuid, team_name: &str) -> String {
+        format!(
+            "You are the LEADER of team {team}. Your ID: {id}.\n\
+             \n\
+             Available void-ctl commands (run them in bash):\n\
+             - void-ctl spawn → create a new worker terminal (auto-launches Claude)\n\
+             - void-ctl list → see all terminals with IDs\n\
+             - void-ctl task create \"subject\" --assign WORKER_ID → assign work\n\
+             - void-ctl task list → check task progress\n\
+             - void-ctl read WORKER_ID --lines 50 → read worker output\n\
+             - void-ctl message send WORKER_ID \"msg\" → send message\n\
+             - void-ctl context set key value → share data with team\n\
+             - void-ctl task wait --all → wait for all tasks to finish\n\
+             \n\
+             START NOW:\n\
+             1. Run: void-ctl spawn (creates a worker with Claude)\n\
+             2. Run: void-ctl list (to see the worker's ID)\n\
+             3. Then ask me what to build and create tasks for the worker.",
+            team = team_name,
+            id = leader_id,
+        )
+    }
+
+    /// Build the worker prompt text (injected into Claude's TUI after it starts).
+    fn worker_prompt_text(worker_id: uuid::Uuid, leader_id: uuid::Uuid) -> String {
+        format!(
+            "You are a WORKER agent. Your ID: {wid}. Leader ID: {lid}.\n\
+             \n\
+             Available void-ctl commands (run them in bash):\n\
+             - void-ctl task list --owner me → check your assigned tasks\n\
+             - void-ctl task update TASK_ID --status in_progress → start a task\n\
+             - void-ctl task update TASK_ID --status completed --result \"summary\" → finish task\n\
+             - void-ctl message send {lid} \"msg\" → message the leader\n\
+             - void-ctl context get key → read shared data\n\
+             \n\
+             START: run void-ctl task list --owner me and work on your tasks.\n\
+             After completing each task, check for new ones. Keep working until no tasks remain.",
+            wid = worker_id,
+            lid = leader_id,
+        )
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> Option<Command> {
@@ -609,33 +624,26 @@ impl eframe::App for VoidApp {
                         }
                     }
 
-                    // If in a group, launch claude with protocol baked in
+                    // If in a group, launch claude + inject worker prompt after delay
                     if spawn_req.group_name.is_some() {
                         if let Some(ref session) = self.ws().orchestration {
                             let leader_id = session.leader_id.unwrap_or(pid);
-                            let team_name = session.group_name.clone();
-                            let group_id = session.group_id;
-                            let bus_port = self.bus_port;
 
-                            // Write worker protocol file
-                            let protocol_dir =
-                                std::env::temp_dir().join(format!("void-orchestration-{group_id}"));
-                            std::fs::create_dir_all(&protocol_dir).ok();
-                            let prompt = crate::orchestration::prompt::worker_prompt(
-                                pid, &team_name, group_id, leader_id, bus_port,
-                            );
-                            let protocol_path = protocol_dir.join(format!("worker-{pid}.md"));
-                            std::fs::write(&protocol_path, &prompt).ok();
-                            let path_str = protocol_path.to_string_lossy().to_string();
-
-                            // Launch claude with protocol in system prompt + kick-off via -p
-                            let launch_cmd = Self::build_claude_launch_cmd(
-                                &path_str,
-                                "You are a WORKER agent. Check your tasks with `void-ctl task list --owner me` and start working.",
-                            );
+                            // Step 1: Launch claude in interactive mode
                             if let Ok(mut b) = bus_clone.lock() {
-                                let _ = b.inject_bytes(pid, launch_cmd.as_bytes(), None);
+                                let _ = b.inject_bytes(
+                                    pid,
+                                    b"claude --dangerously-skip-permissions\r",
+                                    None,
+                                );
                             }
+                            // Step 2: Inject worker prompt after Claude boots
+                            let prompt = Self::worker_prompt_text(pid, leader_id);
+                            self.delayed_injections.push(DelayedInjection {
+                                terminal_id: pid,
+                                bytes: format!("{}\n", prompt).into_bytes(),
+                                fire_at: Instant::now() + std::time::Duration::from_secs(5),
+                            });
                         }
                     } else if let Some(ref command) = spawn_req.command {
                         // Non-orchestration spawn: just run the command
@@ -660,6 +668,23 @@ impl eframe::App for VoidApp {
             if let Ok(mut bus) = self.bus.lock() {
                 bus.tick_statuses();
                 bus.tick_tasks();
+            }
+        }
+
+        // Fire delayed injections that are due
+        {
+            let now = Instant::now();
+            let ready: Vec<DelayedInjection> = self
+                .delayed_injections
+                .iter()
+                .filter(|d| now >= d.fire_at)
+                .cloned()
+                .collect();
+            self.delayed_injections.retain(|d| now < d.fire_at);
+            if let Ok(mut b) = self.bus.lock() {
+                for d in ready {
+                    let _ = b.inject_bytes(d.terminal_id, &d.bytes, None);
+                }
             }
         }
 
@@ -1011,8 +1036,22 @@ impl eframe::App for VoidApp {
                 let mut order: Vec<usize> = (0..self.ws().panels.len()).collect();
                 order.sort_by_key(|&i| self.ws().panels[i].z_index());
 
+                // Check orchestration visibility flags for kanban/network
+                let (kanban_hidden, network_hidden) = self
+                    .ws()
+                    .orchestration
+                    .as_ref()
+                    .map(|s| (!s.kanban_visible, !s.network_visible))
+                    .unwrap_or((false, false));
+
                 let mut interactions = Vec::new();
                 for &idx in &order {
+                    // Skip hidden kanban/network panels
+                    match &self.ws().panels[idx] {
+                        crate::panel::CanvasPanel::Kanban(_) if kanban_hidden => continue,
+                        crate::panel::CanvasPanel::Network(_) if network_hidden => continue,
+                        _ => {}
+                    }
                     if !self
                         .viewport
                         .is_visible(self.ws().panels[idx].rect(), canvas_rect)
@@ -1127,6 +1166,16 @@ impl eframe::App for VoidApp {
                             PanelAction::Rename => {
                                 self.renaming_panel = Some(self.ws().panels[*idx].id());
                                 self.rename_buf = self.ws().panels[*idx].title().to_string();
+                            }
+                            PanelAction::FocusPanel(target_id) => {
+                                // Focus the target terminal panel (from kanban card double-click
+                                // or network node click)
+                                let target = *target_id;
+                                if let Some(focus_idx) =
+                                    self.ws().panels.iter().position(|p| p.id() == target)
+                                {
+                                    self.ws_mut().bring_to_front(focus_idx);
+                                }
                             }
                         }
                     }

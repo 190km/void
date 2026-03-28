@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::kanban::KanbanPanel;
 use crate::network::NetworkPanel;
-use crate::terminal::panel::{PanelInteraction, TerminalPanel};
+use crate::terminal::panel::{PanelAction, PanelInteraction, TerminalPanel};
 
 pub enum CanvasPanel {
     Terminal(TerminalPanel),
@@ -190,6 +190,10 @@ impl CanvasPanel {
                         clicked: true,
                         ..Default::default()
                     },
+                    crate::kanban::KanbanInteraction::FocusTerminal(id) => PanelInteraction {
+                        action: Some(PanelAction::FocusPanel(id)),
+                        ..Default::default()
+                    },
                     _ => PanelInteraction::default(),
                 }
             }
@@ -202,6 +206,10 @@ impl CanvasPanel {
                     },
                     crate::network::NetworkInteraction::Clicked => PanelInteraction {
                         clicked: true,
+                        ..Default::default()
+                    },
+                    crate::network::NetworkInteraction::FocusTerminal(id) => PanelInteraction {
+                        action: Some(PanelAction::FocusPanel(id)),
                         ..Default::default()
                     },
                     _ => PanelInteraction::default(),

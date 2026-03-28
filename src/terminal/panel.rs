@@ -103,10 +103,11 @@ pub struct TerminalPanel {
     pending_mode_reset: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelAction {
     Close,
     Rename,
+    FocusPanel(uuid::Uuid),
 }
 
 #[derive(Default)]
