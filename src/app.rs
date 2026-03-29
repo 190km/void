@@ -610,7 +610,7 @@ impl eframe::App for VoidApp {
 
         egui::Area::new(egui::Id::new("canvas_content"))
             .order(egui::Order::Middle)
-            .fixed_pos(Pos2::ZERO)
+            .fixed_pos(canvas_rect.min)
             .interactable(true)
             .show(ctx, |ui| {
                 ctx.set_transform_layer(ui.layer_id(), transform);
