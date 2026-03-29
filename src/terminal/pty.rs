@@ -271,9 +271,24 @@ impl PtyHandle {
     }
 
     pub fn should_hide_cursor_for_streaming_output(&self) -> bool {
-        // Cursor is always visible — hiding it during output caused
-        // the cursor to flicker/disappear while the user was typing.
-        false
+        let last_input = self
+            .last_input_at
+            .lock()
+            .map(|t| t.elapsed())
+            .unwrap_or(Duration::from_secs(999));
+        let last_output = self
+            .last_output_at
+            .lock()
+            .map(|t| t.elapsed())
+            .unwrap_or(Duration::from_secs(999));
+
+        // Hide cursor when output is actively streaming and the user isn't typing.
+        // This keeps the cursor clean during AI tool output (Codex, Claude, etc.)
+        // while ensuring it stays visible when the user is interacting.
+        let streaming = last_output < Duration::from_millis(100);
+        let user_idle = last_input > Duration::from_millis(150);
+
+        streaming && user_idle
     }
 }
 
