@@ -608,6 +608,11 @@ impl TerminalPanel {
             .pty
             .as_ref()
             .is_some_and(|pty| pty.should_hide_cursor_for_streaming_output());
+        if hide_cursor_for_output {
+            // Schedule repaint so cursor reappears promptly when streaming stops
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(150));
+        }
 
         if let Some(pty) = &self.pty {
             // Check pending mode reset: if Ctrl+C was sent while in ALT_SCREEN
