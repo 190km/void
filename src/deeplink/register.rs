@@ -49,9 +49,9 @@ fn register_windows() {
     ];
 
     for (key, name, value) in entries {
-        let mut args = vec!["add", key, "/f"];
+        let mut args = vec!["add", key];
         if name.is_empty() {
-            args.extend(["/ve", "/d", value]);
+            args.extend(["/ve", "/d", value, "/f"]);
         } else {
             args.extend(["/v", name, "/d", value, "/f"]);
         }
