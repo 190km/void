@@ -6,6 +6,7 @@
 //   void://open/<workspace_id>/@<x>,<y>[,<zoom>]  → navigate to canvas coordinates
 
 pub mod ipc;
+pub mod register;
 pub mod toast;
 
 use std::fmt;

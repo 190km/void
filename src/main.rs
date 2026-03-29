@@ -20,6 +20,9 @@ fn main() -> Result<()> {
     env_logger::init();
     log::info!("Starting Void terminal...");
 
+    // Register void:// protocol handler on this system (idempotent, silent)
+    deeplink::register::ensure_registered();
+
     // Check for void:// deep-link URL passed as CLI argument
     let url_arg = std::env::args().nth(1).filter(|a| a.starts_with("void://"));
 
