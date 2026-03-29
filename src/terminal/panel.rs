@@ -409,6 +409,25 @@ impl TerminalPanel {
         }
     }
 
+    /// Scroll the terminal during active selection, keeping selection coordinates in sync.
+    fn auto_scroll_selection(&mut self, lines: i32) {
+        if let Some(pty) = &self.pty {
+            if let Ok(mut term) = pty.term.lock() {
+                let old_offset = term.grid().display_offset();
+                term.scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
+                let new_offset = term.grid().display_offset();
+                let delta = new_offset as i32 - old_offset as i32;
+                if delta != 0 {
+                    if let Some(ref mut sel) = self.selection {
+                        sel.1 = (sel.1 as i32 + delta).max(0) as usize;
+                        sel.3 = (sel.3 as i32 + delta).max(0) as usize;
+                    }
+                    self.selection_display_offset = new_offset;
+                }
+            }
+        }
+    }
+
     pub fn handle_input(&mut self, ctx: &egui::Context) {
         if !self.focused {
             return;
@@ -1112,21 +1131,68 @@ impl TerminalPanel {
                 self.selecting = true;
             }
         }
+
+        // Sync selection with scroll changes during active selection (mouse-wheel scroll)
+        if self.selecting {
+            let current_offset = scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
+            if current_offset != self.selection_display_offset {
+                let delta = current_offset as i32 - self.selection_display_offset as i32;
+                if let Some(ref mut sel) = self.selection {
+                    sel.1 = (sel.1 as i32 + delta).max(0) as usize;
+                    sel.3 = (sel.3 as i32 + delta).max(0) as usize;
+                }
+                self.selection_display_offset = current_offset;
+            }
+        }
+
         if local_interactions_enabled
             && self.selecting
             && body_resp.dragged_by(egui::PointerButton::Primary)
         {
-            if let Some(pos) = body_resp.hover_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                if let Some(ref mut sel) = self.selection {
-                    sel.2 = col;
-                    sel.3 = row;
+            // Check for auto-scroll when pointer is above or below terminal
+            let mut auto_scrolled = false;
+            if let Some(screen_pos) = ui.ctx().input(|i| i.pointer.latest_pos()) {
+                let canvas_pos = transform.inverse() * screen_pos;
+                let (_, row_height) = crate::terminal::renderer::cell_size(ui.ctx());
+
+                if canvas_pos.y < content_rect.min.y {
+                    // Pointer above terminal: auto-scroll up (towards history)
+                    let distance = content_rect.min.y - canvas_pos.y;
+                    let lines = ((distance / (row_height * 3.0)).ceil() as i32).max(1);
+                    self.auto_scroll_selection(lines);
+                    if let Some(ref mut sel) = self.selection {
+                        sel.2 = 0;
+                        sel.3 = 0;
+                    }
+                    auto_scrolled = true;
+                    ui.ctx().request_repaint();
+                } else if canvas_pos.y > content_rect.max.y {
+                    // Pointer below terminal: auto-scroll down (towards recent)
+                    let distance = canvas_pos.y - content_rect.max.y;
+                    let lines = -(((distance / (row_height * 3.0)).ceil() as i32).max(1));
+                    self.auto_scroll_selection(lines);
+                    if let Some(ref mut sel) = self.selection {
+                        sel.2 = (self.last_cols as usize).saturating_sub(1);
+                        sel.3 = (self.last_rows as usize).saturating_sub(1);
+                    }
+                    auto_scrolled = true;
+                    ui.ctx().request_repaint();
                 }
-            } else if let Some(pos) = body_resp.interact_pointer_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                if let Some(ref mut sel) = self.selection {
-                    sel.2 = col;
-                    sel.3 = row;
+            }
+
+            if !auto_scrolled {
+                if let Some(pos) = body_resp.hover_pos() {
+                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                    if let Some(ref mut sel) = self.selection {
+                        sel.2 = col;
+                        sel.3 = row;
+                    }
+                } else if let Some(pos) = body_resp.interact_pointer_pos() {
+                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                    if let Some(ref mut sel) = self.selection {
+                        sel.2 = col;
+                        sel.3 = row;
+                    }
                 }
             }
         }
