@@ -1,7 +1,7 @@
-// Auto-register the void:// protocol handler on app startup.
-// Idempotent — safe to run every launch. Silently ignores errors.
+// Auto-register the void:// protocol handler on first launch.
+// Checks if already registered before doing anything.
 
-/// Register the void:// URL scheme handler for the current platform.
+/// Register the void:// URL scheme handler if not already present.
 pub fn ensure_registered() {
     #[cfg(target_os = "windows")]
     register_windows();
@@ -19,6 +19,18 @@ fn register_windows() {
     use std::os::windows::process::CommandExt;
     use std::process::Command;
 
+    // Check if already registered
+    let check = Command::new("reg")
+        .args([
+            "query",
+            "HKCU\\Software\\Classes\\void\\shell\\open\\command",
+        ])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output();
+    if check.is_ok_and(|o| o.status.success()) {
+        return;
+    }
+
     let exe = match std::env::current_exe() {
         Ok(p) => p.to_string_lossy().to_string(),
         Err(_) => return,
@@ -26,7 +38,6 @@ fn register_windows() {
 
     let command_value = format!("\"{}\" \"%1\"", exe);
 
-    // All writes go to HKCU (no admin needed)
     let entries: &[(&str, &str, &str)] = &[
         ("HKCU\\Software\\Classes\\void", "", "URL:Void Protocol"),
         ("HKCU\\Software\\Classes\\void", "URL Protocol", ""),
@@ -46,7 +57,7 @@ fn register_windows() {
         }
         let _ = Command::new("reg")
             .args(&args)
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .creation_flags(0x08000000)
             .output();
     }
 
@@ -56,6 +67,16 @@ fn register_windows() {
 #[cfg(target_os = "linux")]
 fn register_linux() {
     use std::process::Command;
+
+    let Some(app_dir) = dirs_path("applications") else {
+        return;
+    };
+    let desktop_path = app_dir.join("void-terminal.desktop");
+
+    // Already registered
+    if desktop_path.exists() {
+        return;
+    }
 
     let exe = match std::env::current_exe() {
         Ok(p) => p.to_string_lossy().to_string(),
@@ -75,24 +96,17 @@ fn register_linux() {
         exe
     );
 
-    // Write to ~/.local/share/applications/
-    let Some(data_home) = dirs_path("applications") else {
-        return;
-    };
-    let _ = std::fs::create_dir_all(&data_home);
-    let desktop_path = data_home.join("void-terminal.desktop");
+    let _ = std::fs::create_dir_all(&app_dir);
     if std::fs::write(&desktop_path, desktop_content).is_err() {
         return;
     }
 
-    // Register as default handler for void:// scheme
     let _ = Command::new("xdg-mime")
         .args(["default", "void-terminal.desktop", "x-scheme-handler/void"])
         .output();
 
-    // Update desktop database
     let _ = Command::new("update-desktop-database")
-        .arg(&data_home)
+        .arg(&app_dir)
         .output();
 
     log::info!("Registered void:// protocol handler (Linux)");
@@ -109,15 +123,12 @@ fn dirs_path(subdir: &str) -> Option<std::path::PathBuf> {
 fn register_macos() {
     use std::process::Command;
 
-    // For .app bundles: macOS auto-registers from Info.plist when in /Applications.
-    // For dev builds or custom paths: force re-register with lsregister.
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(_) => return,
     };
 
     // Walk up from the binary to find the .app bundle
-    // e.g. /Applications/Void.app/Contents/MacOS/void → /Applications/Void.app
     let mut app_bundle = None;
     let mut path = exe.as_path();
     for _ in 0..4 {
@@ -130,15 +141,27 @@ fn register_macos() {
         }
     }
 
-    if let Some(bundle) = app_bundle {
-        let lsregister = "/System/Library/Frameworks/CoreServices.framework\
-            /Frameworks/LaunchServices.framework/Support/lsregister";
-        let _ = Command::new(lsregister)
-            .args(["-R", "-f"])
-            .arg(&bundle)
-            .output();
-        log::info!("Registered void:// protocol handler (macOS): {:?}", bundle);
-    } else {
-        log::debug!("Not running from .app bundle — skipping macOS protocol registration");
+    let Some(bundle) = app_bundle else {
+        return; // Not running from .app bundle (dev build)
+    };
+
+    // Check if already registered by querying LaunchServices
+    let check = Command::new("defaults")
+        .args([
+            "read",
+            "com.apple.LaunchServices/com.apple.launchservices.secure",
+        ])
+        .output();
+    if check.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("x-scheme-handler/void")) {
+        return;
     }
+
+    let lsregister = "/System/Library/Frameworks/CoreServices.framework\
+        /Frameworks/LaunchServices.framework/Support/lsregister";
+    let _ = Command::new(lsregister)
+        .args(["-R", "-f"])
+        .arg(&bundle)
+        .output();
+
+    log::info!("Registered void:// protocol handler (macOS)");
 }
