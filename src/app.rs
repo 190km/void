@@ -4,6 +4,9 @@ use egui::{Color32, Pos2, Vec2};
 use crate::canvas::viewport::Viewport;
 use crate::command_palette::commands::Command;
 use crate::command_palette::CommandPalette;
+use crate::deeplink::ipc::IpcServer;
+use crate::deeplink::toast::Toast;
+use crate::deeplink::DeepLink;
 use crate::sidebar::{Sidebar, SidebarResponse, SIDEBAR_BG, SIDEBAR_BORDER, SIDEBAR_PADDING_H};
 use crate::state::workspace::Workspace;
 use crate::terminal::panel::PanelAction;
@@ -35,12 +38,21 @@ pub struct VoidApp {
     brand_texture: egui::TextureHandle,
     sidebar: Sidebar,
     update_checker: UpdateChecker,
+    // Deep-link navigation
+    pending_deeplink: Option<String>,
+    ipc_server: Option<IpcServer>,
+    toast: Option<Toast>,
+    navigate_dialog_open: bool,
+    navigate_buf: String,
 }
 
 impl VoidApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, url_arg: Option<String>) -> Self {
         let ctx = cc.egui_ctx.clone();
         Self::setup_fonts(&ctx);
+
+        // Start IPC server for receiving deep-links from other instances
+        let ipc_server = IpcServer::start(ctx.clone());
 
         let brand_texture = {
             let png = include_bytes!("../assets/brand.png");
@@ -106,6 +118,11 @@ impl VoidApp {
             brand_texture,
             sidebar: Sidebar::default(),
             update_checker: UpdateChecker::new(cc.egui_ctx.clone()),
+            pending_deeplink: url_arg,
+            ipc_server,
+            toast: None,
+            navigate_dialog_open: false,
+            navigate_buf: String::new(),
         }
     }
 
@@ -237,6 +254,29 @@ impl VoidApp {
                 let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
             }
+            Command::NavigateToLink => {
+                self.navigate_dialog_open = true;
+                self.navigate_buf.clear();
+            }
+            Command::CopyLink => {
+                // Copy link to focused panel, or viewport position if none focused
+                let ws_id = self.ws().id;
+                let url = if let Some(p) = self.ws().panels.iter().find(|p| p.focused()) {
+                    format!("void://open/{}/{}", ws_id, p.id())
+                } else {
+                    let center = self.viewport.visible_canvas_rect(screen_rect).center();
+                    let z = self.viewport.zoom;
+                    format!(
+                        "void://open/{ws_id}/@{:.0},{:.0},{:.2}",
+                        center.x, center.y, z
+                    )
+                };
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    let _ = clipboard.set_text(&url);
+                }
+                let time = ctx.input(|i| i.time);
+                self.toast = Some(Toast::new("Link copied to clipboard", 2.0, time));
+            }
         }
     }
 
@@ -269,6 +309,77 @@ impl VoidApp {
         );
     }
 
+    /// Navigate to a deep-link target: workspace, panel, or canvas position.
+    fn navigate_to_deeplink(&mut self, link: DeepLink, canvas_rect: egui::Rect, time: f64) {
+        // Find workspace by UUID
+        let ws_id = match &link {
+            DeepLink::Workspace { workspace_id }
+            | DeepLink::Panel { workspace_id, .. }
+            | DeepLink::Position { workspace_id, .. } => workspace_id.clone(),
+        };
+
+        let ws_idx = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id.to_string() == ws_id);
+
+        let Some(ws_idx) = ws_idx else {
+            self.toast = Some(Toast::new("Workspace not found", 3.0, time));
+            return;
+        };
+
+        self.switch_workspace(ws_idx);
+
+        match link {
+            DeepLink::Workspace { .. } => {}
+            DeepLink::Panel { panel_id, .. } => {
+                let panel_pos = self
+                    .ws()
+                    .panels
+                    .iter()
+                    .position(|p| p.id().to_string() == panel_id);
+
+                if let Some(idx) = panel_pos {
+                    let center = self.ws().panels[idx].rect().center();
+                    self.viewport.pan_to_center(center, canvas_rect);
+                    self.ws_mut().bring_to_front(idx);
+                } else {
+                    self.toast = Some(Toast::new("Panel not found", 3.0, time));
+                }
+            }
+            DeepLink::Position { x, y, zoom, .. } => {
+                self.viewport.pan_to_center(Pos2::new(x, y), canvas_rect);
+                if let Some(z) = zoom {
+                    self.viewport.zoom = z.clamp(
+                        crate::canvas::config::ZOOM_MIN,
+                        crate::canvas::config::ZOOM_MAX,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Process any pending deep-link URL (from CLI arg or IPC).
+    fn process_pending_deeplinks(&mut self, canvas_rect: egui::Rect, time: f64) {
+        // Check IPC server for incoming URL from another instance
+        if let Some(ref server) = self.ipc_server {
+            if let Some(url) = server.take_pending() {
+                self.pending_deeplink = Some(url);
+            }
+        }
+
+        // Process pending deep-link
+        if let Some(url) = self.pending_deeplink.take() {
+            match crate::deeplink::parse(&url) {
+                Ok(link) => self.navigate_to_deeplink(link, canvas_rect, time),
+                Err(e) => {
+                    log::warn!("Invalid deep-link URL: {e}");
+                    self.toast = Some(Toast::new(format!("Invalid link: {e}"), 3.0, time));
+                }
+            }
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> Option<Command> {
         if self.command_palette.open {
             return None;
@@ -298,6 +409,10 @@ impl VoidApp {
                 cmd = Some(Command::ZoomToFit);
             } else if i.key_pressed(egui::Key::F2) && !i.modifiers.ctrl {
                 cmd = Some(Command::RenameTerminal);
+            } else if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::L) {
+                cmd = Some(Command::NavigateToLink);
+            } else if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::L) {
+                cmd = Some(Command::CopyLink);
             }
         });
         cmd
@@ -351,13 +466,18 @@ impl eframe::App for VoidApp {
             self.execute_command(cmd, ctx, canvas_rect_for_commands);
         }
 
+        // Process pending deep-link navigation (from CLI arg or IPC)
+        let time = ctx.input(|i| i.time);
+        self.process_pending_deeplinks(canvas_rect_for_commands, time);
+
         // Sync titles
         for p in &mut self.ws_mut().panels {
             p.sync_title();
         }
 
         // Keyboard input to focused terminal
-        if !self.command_palette.open && self.renaming_panel.is_none() {
+        if !self.command_palette.open && self.renaming_panel.is_none() && !self.navigate_dialog_open
+        {
             for p in &mut self.ws_mut().panels {
                 if p.focused() {
                     p.handle_input(ctx);
@@ -426,6 +546,61 @@ impl eframe::App for VoidApp {
             if close {
                 self.renaming_panel = None;
                 self.rename_buf.clear();
+            }
+        }
+
+        // Navigate to Link dialog
+        if self.navigate_dialog_open {
+            let mut close = false;
+            let mut navigate_url: Option<String> = None;
+            egui::Area::new(egui::Id::new("navigate_dialog"))
+                .order(egui::Order::Debug)
+                .fixed_pos(Pos2::new(
+                    screen_rect.center().x - 200.0,
+                    screen_rect.min.y + 120.0,
+                ))
+                .show(ctx, |ui| {
+                    egui::Frame::default()
+                        .fill(Color32::from_rgb(20, 20, 20))
+                        .stroke(egui::Stroke::new(0.5, Color32::from_rgb(40, 40, 40)))
+                        .rounding(8.0)
+                        .inner_margin(14.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("Navigate to Link")
+                                    .color(Color32::from_rgb(160, 160, 160))
+                                    .size(12.0),
+                            );
+                            ui.add_space(6.0);
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut self.navigate_buf)
+                                    .desired_width(380.0)
+                                    .font(egui::FontId::monospace(12.0))
+                                    .hint_text("void://open/..."),
+                            );
+                            r.request_focus();
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Go").clicked()
+                                    || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    navigate_url = Some(self.navigate_buf.clone());
+                                    close = true;
+                                }
+                                if ui.button("Cancel").clicked()
+                                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                                {
+                                    close = true;
+                                }
+                            });
+                        });
+                });
+            if close {
+                self.navigate_dialog_open = false;
+                self.navigate_buf.clear();
+            }
+            if let Some(url) = navigate_url {
+                self.pending_deeplink = Some(url);
             }
         }
 
@@ -615,7 +790,7 @@ impl eframe::App for VoidApp {
             .show(ctx, |ui| {
                 ctx.set_transform_layer(ui.layer_id(), transform);
                 ui.set_clip_rect(clip);
-                ui.allocate_rect(clip, egui::Sense::hover());
+                let canvas_bg_resp = ui.allocate_rect(clip, egui::Sense::click());
 
                 let mut order: Vec<usize> = (0..self.ws().panels.len()).collect();
                 order.sort_by_key(|&i| self.ws().panels[i].z_index());
@@ -737,6 +912,17 @@ impl eframe::App for VoidApp {
                                 self.renaming_panel = Some(self.ws().panels[*idx].id());
                                 self.rename_buf = self.ws().panels[*idx].title().to_string();
                             }
+                            PanelAction::CopyLink => {
+                                let ws_id = self.ws().id;
+                                let panel_id = self.ws().panels[*idx].id();
+                                let url = format!("void://open/{ws_id}/{panel_id}");
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    let _ = clipboard.set_text(&url);
+                                }
+                                let time = ctx.input(|i| i.time);
+                                self.toast =
+                                    Some(Toast::new("Link copied to clipboard", 2.0, time));
+                            }
                         }
                     }
                 }
@@ -771,6 +957,33 @@ impl eframe::App for VoidApp {
                         }
                     }
                 }
+
+                // Canvas context menu — Copy Link with coordinates + zoom
+                // Placed in the content layer (Order::Middle) so it receives right-clicks
+                // that the background layer (Order::Background) would miss.
+                canvas_bg_resp.context_menu(|ui| {
+                    if ui.button("Copy Link to Position").clicked() {
+                        let canvas_pos = ui
+                            .input(|i| i.pointer.hover_pos())
+                            .map(|pos| self.viewport.screen_to_canvas(pos, canvas_rect))
+                            .unwrap_or_else(|| {
+                                self.viewport.visible_canvas_rect(canvas_rect).center()
+                            });
+                        let ws_id = self.ws().id;
+                        let z = self.viewport.zoom;
+                        let url = format!(
+                            "void://open/{ws_id}/@{:.0},{:.0},{:.2}",
+                            canvas_pos.x, canvas_pos.y, z
+                        );
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(&url);
+                        }
+                        let time = ui.input(|i| i.time);
+                        self.toast =
+                            Some(Toast::new("Position link copied to clipboard", 2.0, time));
+                        ui.close_menu();
+                    }
+                });
 
                 // Draw snap guides
                 let painter = ui.painter();
@@ -824,6 +1037,25 @@ impl eframe::App for VoidApp {
                         self.show_minimap = false;
                     }
                 });
+        }
+
+        // --- Toast notification overlay ---
+        if let Some(ref toast) = self.toast {
+            let time = ctx.input(|i| i.time);
+            egui::Area::new(egui::Id::new("toast_overlay"))
+                .order(egui::Order::Debug)
+                .fixed_pos(canvas_rect.center_bottom() - Vec2::new(0.0, 60.0))
+                .interactable(false)
+                .show(ctx, |ui| {
+                    if !toast.show(ui, canvas_rect, time) {
+                        // will be cleaned up below
+                    }
+                });
+            if toast.is_expired(time) {
+                self.toast = None;
+            } else {
+                ctx.request_repaint();
+            }
         }
     }
 }

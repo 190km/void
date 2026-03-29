@@ -139,6 +139,11 @@ jobs:
             <key>CFBundleIconFile</key><string>icon</string>
             <key>NSHighResolutionCapable</key><true/>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>CFBundleURLTypes</key>
+            <array><dict>
+              <key>CFBundleURLName</key><string>Void Deep Link</string>
+              <key>CFBundleURLSchemes</key><array><string>void</string></array>
+            </dict></array>
           </dict></plist>
           PLIST
           mkdir -p dmg-stage
@@ -193,6 +198,11 @@ jobs:
             <key>CFBundleIconFile</key><string>icon</string>
             <key>NSHighResolutionCapable</key><true/>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>CFBundleURLTypes</key>
+            <array><dict>
+              <key>CFBundleURLName</key><string>Void Deep Link</string>
+              <key>CFBundleURLSchemes</key><array><string>void</string></array>
+            </dict></array>
           </dict></plist>
           PLIST
           mkdir -p dmg-stage

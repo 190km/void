@@ -67,6 +67,27 @@ pub const VOID_SHORTCUTS: &[(Modifiers, Key)] = &[
         },
         Key::T,
     ),
+    // Deep-link navigation shortcuts
+    (
+        Modifiers {
+            alt: false,
+            ctrl: true,
+            shift: false,
+            mac_cmd: false,
+            command: false,
+        },
+        Key::L,
+    ),
+    (
+        Modifiers {
+            alt: false,
+            ctrl: true,
+            shift: true,
+            mac_cmd: false,
+            command: false,
+        },
+        Key::L,
+    ),
 ];
 
 pub struct TerminalPanel {
@@ -108,6 +129,7 @@ pub struct TerminalPanel {
 pub enum PanelAction {
     Close,
     Rename,
+    CopyLink,
 }
 
 #[derive(Default)]
@@ -267,6 +289,12 @@ impl TerminalPanel {
         let color = Color32::from_rgb(state.color[0], state.color[1], state.color[2]);
 
         let mut panel = Self::new_with_terminal(ctx, position, size, color, cwd);
+        // Restore persisted panel ID if available (stable deep-link targets)
+        if let Some(ref id_str) = state.id {
+            if let Ok(id) = uuid::Uuid::parse_str(id_str) {
+                panel.id = id;
+            }
+        }
         panel.z_index = state.z_index;
         panel.focused = state.focused;
         panel
@@ -275,6 +303,7 @@ impl TerminalPanel {
     /// Snapshot the panel layout for persistence (no PTY state).
     pub fn to_saved(&self) -> crate::state::persistence::PanelState {
         crate::state::persistence::PanelState {
+            id: Some(self.id.to_string()),
             title: self.title.clone(),
             position: [self.position.x, self.position.y],
             size: [self.size.x, self.size.y],
@@ -1368,6 +1397,11 @@ impl TerminalPanel {
                         }
                         if ui.button("Close").clicked() {
                             ix.action = Some(PanelAction::Close);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
+                        if ui.button("Copy Link").clicked() {
+                            ix.action = Some(PanelAction::CopyLink);
                             ui.memory_mut(|m| m.close_popup());
                         }
                     });
