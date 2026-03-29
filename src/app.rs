@@ -667,6 +667,33 @@ impl eframe::App for VoidApp {
                     }
                 }
 
+                // Canvas context menu — Copy Link with coordinates + zoom
+                bg_resp.context_menu(|ui| {
+                    if ui.button("Copy Link to Position").clicked() {
+                        // Use the pointer position where the right-click happened
+                        let canvas_pos = ui
+                            .input(|i| i.pointer.hover_pos())
+                            .map(|pos| self.viewport.screen_to_canvas(pos, canvas_rect))
+                            .unwrap_or_else(|| {
+                                // Fallback: center of the visible canvas
+                                self.viewport.visible_canvas_rect(canvas_rect).center()
+                            });
+                        let ws_id = self.ws().id;
+                        let z = self.viewport.zoom;
+                        let url = format!(
+                            "void://open/{ws_id}/@{:.0},{:.0},{:.2}",
+                            canvas_pos.x, canvas_pos.y, z
+                        );
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(&url);
+                        }
+                        let time = ui.input(|i| i.time);
+                        self.toast =
+                            Some(Toast::new("Position link copied to clipboard", 2.0, time));
+                        ui.close_menu();
+                    }
+                });
+
                 // Status bar: zoom level + pointer canvas coordinates (bottom-left)
                 let zoom_pct = format!("{:.0}%", self.viewport.zoom * 100.0);
                 let pointer_info = if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
