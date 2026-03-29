@@ -67,6 +67,27 @@ pub const VOID_SHORTCUTS: &[(Modifiers, Key)] = &[
         },
         Key::T,
     ),
+    // Deep-link navigation shortcuts
+    (
+        Modifiers {
+            alt: false,
+            ctrl: true,
+            shift: false,
+            mac_cmd: false,
+            command: false,
+        },
+        Key::L,
+    ),
+    (
+        Modifiers {
+            alt: false,
+            ctrl: true,
+            shift: true,
+            mac_cmd: false,
+            command: false,
+        },
+        Key::L,
+    ),
 ];
 
 pub struct TerminalPanel {
@@ -81,9 +102,9 @@ pub struct TerminalPanel {
     last_cols: u16,
     last_rows: u16,
     spawn_error: Option<String>,
-    // Selection state — viewport cell coordinates at the time of selection.
-    // Rows are relative to the viewport when selection_display_offset was captured.
-    selection: Option<(usize, usize, usize, usize)>, // (start_col, start_row, end_col, end_row)
+    // Selection state — cell coordinates relative to selection_display_offset.
+    // Rows can be negative (content scrolled above viewport).
+    selection: Option<(i32, i32, i32, i32)>, // (start_col, start_row, end_col, end_row)
     selection_display_offset: usize,
     selecting: bool,
     scroll_remainder: f32,
@@ -97,6 +118,7 @@ pub struct TerminalPanel {
     /// so accumulated movement can escape snap zones naturally.
     pub resize_virtual_rect: Option<Rect>,
     bell_flash_until: f64,
+    context_menu_pos: Option<Pos2>,
     /// When set, reset terminal modes (ALT_SCREEN, MOUSE_MODE) after this time.
     /// Triggered when Ctrl+C is sent while in ALT_SCREEN — the TUI app is likely
     /// being killed and won't send cleanup escape sequences.
@@ -107,6 +129,7 @@ pub struct TerminalPanel {
 pub enum PanelAction {
     Close,
     Rename,
+    CopyLink,
 }
 
 #[derive(Default)]
@@ -221,6 +244,7 @@ impl TerminalPanel {
             drag_virtual_pos: None,
             resize_virtual_rect: None,
             bell_flash_until: 0.0,
+            context_menu_pos: None,
             pending_mode_reset: None,
         }
     }
@@ -249,6 +273,7 @@ impl TerminalPanel {
             drag_virtual_pos: None,
             resize_virtual_rect: None,
             bell_flash_until: 0.0,
+            context_menu_pos: None,
             pending_mode_reset: None,
         }
     }
@@ -264,6 +289,12 @@ impl TerminalPanel {
         let color = Color32::from_rgb(state.color[0], state.color[1], state.color[2]);
 
         let mut panel = Self::new_with_terminal(ctx, position, size, color, cwd);
+        // Restore persisted panel ID if available (stable deep-link targets)
+        if let Some(ref id_str) = state.id {
+            if let Ok(id) = uuid::Uuid::parse_str(id_str) {
+                panel.id = id;
+            }
+        }
         panel.z_index = state.z_index;
         panel.focused = state.focused;
         panel
@@ -272,6 +303,7 @@ impl TerminalPanel {
     /// Snapshot the panel layout for persistence (no PTY state).
     pub fn to_saved(&self) -> crate::state::persistence::PanelState {
         crate::state::persistence::PanelState {
+            id: Some(self.id.to_string()),
             title: self.title.clone(),
             position: [self.position.x, self.position.y],
             size: [self.size.x, self.size.y],
@@ -409,6 +441,25 @@ impl TerminalPanel {
         }
     }
 
+    /// Scroll the terminal during active selection, keeping selection coordinates in sync.
+    fn auto_scroll_selection(&mut self, lines: i32) {
+        if let Some(pty) = &self.pty {
+            if let Ok(mut term) = pty.term.lock() {
+                let old_offset = term.grid().display_offset();
+                term.scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
+                let new_offset = term.grid().display_offset();
+                let delta = new_offset as i32 - old_offset as i32;
+                if delta != 0 {
+                    if let Some(ref mut sel) = self.selection {
+                        sel.1 += delta;
+                        sel.3 += delta;
+                    }
+                    self.selection_display_offset = new_offset;
+                }
+            }
+        }
+    }
+
     pub fn handle_input(&mut self, ctx: &egui::Context) {
         if !self.focused {
             return;
@@ -489,14 +540,14 @@ impl TerminalPanel {
     }
 
     /// Convert pointer position to terminal cell (col, row), clamped to grid bounds.
-    fn pos_to_cell(&self, pos: Pos2, body: Rect, ctx: &egui::Context) -> (usize, usize) {
+    fn pos_to_cell(&self, pos: Pos2, body: Rect, ctx: &egui::Context) -> (i32, i32) {
         let (cw, ch) = crate::terminal::renderer::cell_size(ctx);
         let col = ((pos.x - body.min.x - crate::terminal::renderer::PAD_X) / cw)
             .floor()
-            .clamp(0.0, (self.last_cols as f32) - 1.0) as usize;
+            .clamp(0.0, (self.last_cols as f32) - 1.0) as i32;
         let row = ((pos.y - body.min.y - crate::terminal::renderer::PAD_Y) / ch)
             .floor()
-            .clamp(0.0, (self.last_rows as f32) - 1.0) as usize;
+            .clamp(0.0, (self.last_rows as f32) - 1.0) as i32;
         (col, row)
     }
 
@@ -504,7 +555,14 @@ impl TerminalPanel {
         let (sc, sr, ec, er) = self.selection?;
         let pty = self.pty.as_ref()?;
         let term = pty.term.lock().ok()?;
-        let text = extract_selection_text(&term, sc, sr, ec, er, self.selection_display_offset);
+        let text = extract_selection_text(
+            &term,
+            sc.max(0) as usize,
+            sr.max(0) as usize,
+            ec.max(0) as usize,
+            er.max(0) as usize,
+            self.selection_display_offset,
+        );
         if text.is_empty() {
             None
         } else {
@@ -608,6 +666,11 @@ impl TerminalPanel {
             .pty
             .as_ref()
             .is_some_and(|pty| pty.should_hide_cursor_for_streaming_output());
+        if hide_cursor_for_output {
+            // Schedule repaint so cursor reappears promptly when streaming stops
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(150));
+        }
 
         if let Some(pty) = &self.pty {
             // Check pending mode reset: if Ctrl+C was sent while in ALT_SCREEN
@@ -772,31 +835,21 @@ impl TerminalPanel {
                 let (cw, ch) = crate::terminal::renderer::cell_size(ui.ctx());
                 let pad_x = crate::terminal::renderer::PAD_X;
                 let pad_y = crate::terminal::renderer::PAD_Y;
-                let max_col = self.last_cols as usize;
+                let max_col = self.last_cols as i32;
                 let max_row = self.last_rows as i32;
 
                 let (start_row, start_col, end_row, end_col) = if sr < er || (sr == er && sc <= ec)
                 {
-                    (
-                        sr,
-                        sc.min(max_col.saturating_sub(1)),
-                        er,
-                        ec.min(max_col.saturating_sub(1)),
-                    )
+                    (sr, sc.min(max_col - 1), er, ec.min(max_col - 1))
                 } else {
-                    (
-                        er,
-                        ec.min(max_col.saturating_sub(1)),
-                        sr,
-                        sc.min(max_col.saturating_sub(1)),
-                    )
+                    (er, ec.min(max_col - 1), sr, sc.min(max_col - 1))
                 };
 
-                // Adjust rows for scroll: positive delta = scrolled back = rows move down
+                // Adjust rows for scroll delta since selection was made
                 let current_offset = scrollbar_state.map(|s| s.display_offset).unwrap_or(0) as i32;
                 let offset_delta = current_offset - self.selection_display_offset as i32;
-                let adj_start = start_row as i32 + offset_delta;
-                let adj_end = end_row as i32 + offset_delta;
+                let adj_start = start_row + offset_delta;
+                let adj_end = end_row + offset_delta;
 
                 let screen_content =
                     Rect::from_min_max(transform * content_rect.min, transform * content_rect.max)
@@ -809,21 +862,20 @@ impl TerminalPanel {
                     if row_i < 0 || row_i >= max_row {
                         continue;
                     }
-                    let row = row_i as usize;
-                    let orig_row = row_i - offset_delta; // original selection row
-                    let c0 = if orig_row == start_row as i32 {
-                        start_col
+                    let orig_row = row_i - offset_delta;
+                    let c0 = if orig_row == start_row {
+                        start_col.max(0)
                     } else {
                         0
                     };
-                    let c1 = (if orig_row == end_row as i32 {
+                    let c1 = (if orig_row == end_row {
                         end_col + 1
                     } else {
                         max_col
                     })
                     .min(max_col);
                     let x0 = content_rect.min.x + pad_x + c0 as f32 * cw;
-                    let y0 = content_rect.min.y + pad_y + row as f32 * ch;
+                    let y0 = content_rect.min.y + pad_y + row_i as f32 * ch;
                     let x1 = content_rect.min.x + pad_x + c1 as f32 * cw;
                     let sel_rect = Rect::from_min_max(
                         transform * Pos2::new(x0, y0),
@@ -1078,8 +1130,10 @@ impl TerminalPanel {
                     // Double-click: select word
                     if let Some(pos) = body_resp.interact_pointer_pos() {
                         let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                        if let Some((start, end)) = self.word_boundaries_at(col, row) {
-                            self.selection = Some((start, row, end, row));
+                        if let Some((start, end)) =
+                            self.word_boundaries_at(col as usize, row as usize)
+                        {
+                            self.selection = Some((start as i32, row, end as i32, row));
                             self.selection_display_offset =
                                 scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                         }
@@ -1089,7 +1143,7 @@ impl TerminalPanel {
                     // Triple-click: select entire line
                     if let Some(pos) = body_resp.interact_pointer_pos() {
                         let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                        let last_col = (self.last_cols as usize).saturating_sub(1);
+                        let last_col = (self.last_cols as i32) - 1;
                         self.selection = Some((0, row, last_col, row));
                         self.selection_display_offset =
                             scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
@@ -1112,21 +1166,59 @@ impl TerminalPanel {
                 self.selecting = true;
             }
         }
+
         if local_interactions_enabled
             && self.selecting
             && body_resp.dragged_by(egui::PointerButton::Primary)
         {
-            if let Some(pos) = body_resp.hover_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                if let Some(ref mut sel) = self.selection {
-                    sel.2 = col;
-                    sel.3 = row;
+            // Check for auto-scroll when pointer is above or below terminal
+            let mut auto_scrolled = false;
+            if let Some(screen_pos) = ui.ctx().input(|i| i.pointer.latest_pos()) {
+                let canvas_pos = transform.inverse() * screen_pos;
+                let (_, row_height) = crate::terminal::renderer::cell_size(ui.ctx());
+
+                if canvas_pos.y < content_rect.min.y {
+                    // Pointer above terminal: auto-scroll up (towards history)
+                    let distance = content_rect.min.y - canvas_pos.y;
+                    let lines = ((distance / (row_height * 3.0)).ceil() as i32).max(1);
+                    self.auto_scroll_selection(lines);
+                    if let Some(ref mut sel) = self.selection {
+                        sel.2 = 0;
+                        sel.3 = 0;
+                    }
+                    auto_scrolled = true;
+                    ui.ctx().request_repaint();
+                } else if canvas_pos.y > content_rect.max.y {
+                    // Pointer below terminal: auto-scroll down (towards recent)
+                    let distance = canvas_pos.y - content_rect.max.y;
+                    let lines = -(((distance / (row_height * 3.0)).ceil() as i32).max(1));
+                    self.auto_scroll_selection(lines);
+                    if let Some(ref mut sel) = self.selection {
+                        sel.2 = (self.last_cols as i32) - 1;
+                        sel.3 = (self.last_rows as i32) - 1;
+                    }
+                    auto_scrolled = true;
+                    ui.ctx().request_repaint();
                 }
-            } else if let Some(pos) = body_resp.interact_pointer_pos() {
-                let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                if let Some(ref mut sel) = self.selection {
-                    sel.2 = col;
-                    sel.3 = row;
+            }
+
+            if !auto_scrolled {
+                // Convert viewport row to original selection offset coordinate
+                let current_offset = scrollbar_state.map(|s| s.display_offset).unwrap_or(0) as i32;
+                let offset_delta = current_offset - self.selection_display_offset as i32;
+
+                if let Some(pos) = body_resp.hover_pos() {
+                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                    if let Some(ref mut sel) = self.selection {
+                        sel.2 = col;
+                        sel.3 = row - offset_delta;
+                    }
+                } else if let Some(pos) = body_resp.interact_pointer_pos() {
+                    let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
+                    if let Some(ref mut sel) = self.selection {
+                        sel.2 = col;
+                        sel.3 = row - offset_delta;
+                    }
                 }
             }
         }
@@ -1143,7 +1235,9 @@ impl TerminalPanel {
                     + if mods.ctrl { 16 } else { 0 };
 
                 // Helper: send SGR mouse event
-                let send_mouse = |btn: u8, col: usize, row: usize, press: bool| {
+                let send_mouse = |btn: u8, col: i32, row: i32, press: bool| {
+                    let col = col.max(0) as usize;
+                    let row = row.max(0) as usize;
                     let suffix = if press { 'M' } else { 'm' };
                     let seq = format!("\x1b[<{};{};{}{}", btn + mod_bits, col + 1, row + 1, suffix);
                     pty.write(seq.as_bytes());
@@ -1229,64 +1323,95 @@ impl TerminalPanel {
         }
 
         // Context menu with Copy / Paste / Select All
-        body_resp.context_menu(|ui| {
-            let has_sel = self.selection.is_some();
-            if ui.add_enabled(has_sel, egui::Button::new("Copy")).clicked() {
-                if let Some(text) = self.selected_text() {
-                    ui.ctx().copy_text(text);
-                }
-                ui.close_menu();
-            }
-            if ui.button("Paste").clicked() {
-                if let Some(pty) = &self.pty {
-                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        if let Ok(text) = clipboard.get_text() {
-                            let mode = self.input_mode();
-                            if mode.bracketed_paste {
-                                let mut bytes = Vec::new();
-                                bytes.extend_from_slice(b"\x1b[200~");
-                                bytes.extend_from_slice(text.as_bytes());
-                                bytes.extend_from_slice(b"\x1b[201~");
-                                pty.write(&bytes);
-                            } else {
-                                pty.write(text.as_bytes());
+        // Rendered at Order::Debug so it appears above terminal content (Order::Tooltip).
+        let menu_id = ui.id().with("ctx_menu").with(self.id);
+        if body_resp.secondary_clicked() {
+            // Store click position in canvas space so the menu moves with pan/zoom
+            let screen_pos = ui.input(|i| i.pointer.latest_pos());
+            self.context_menu_pos = screen_pos.map(|p| transform.inverse() * p);
+            ui.memory_mut(|m| m.toggle_popup(menu_id));
+        }
+        if ui.memory(|m| m.is_popup_open(menu_id)) {
+            // Convert canvas position back to screen space each frame
+            let menu_pos = self
+                .context_menu_pos
+                .map(|p| transform * p)
+                .unwrap_or(body_resp.rect.center());
+            let area_resp = egui::Area::new(menu_id)
+                .order(egui::Order::Debug)
+                .fixed_pos(menu_pos)
+                .interactable(true)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        let has_sel = self.selection.is_some();
+                        if ui.add_enabled(has_sel, egui::Button::new("Copy")).clicked() {
+                            if let Some(text) = self.selected_text() {
+                                ui.ctx().copy_text(text);
                             }
+                            ui.memory_mut(|m| m.close_popup());
                         }
-                    }
-                }
-                ui.close_menu();
+                        if ui.button("Paste").clicked() {
+                            if let Some(pty) = &self.pty {
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    if let Ok(text) = clipboard.get_text() {
+                                        let mode = self.input_mode();
+                                        if mode.bracketed_paste {
+                                            let mut bytes = Vec::new();
+                                            bytes.extend_from_slice(b"\x1b[200~");
+                                            bytes.extend_from_slice(text.as_bytes());
+                                            bytes.extend_from_slice(b"\x1b[201~");
+                                            pty.write(&bytes);
+                                        } else {
+                                            pty.write(text.as_bytes());
+                                        }
+                                    }
+                                }
+                            }
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if ui.button("Select All").clicked() {
+                            let last_col = (self.last_cols as i32) - 1;
+                            let last_row = (self.last_rows as i32) - 1;
+                            self.selection = Some((0, 0, last_col, last_row));
+                            self.selection_display_offset =
+                                scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
+                        if ui.button("Clear Scrollback").clicked() {
+                            if let Some(pty) = &self.pty {
+                                pty.write(b"\x1b[3J");
+                            }
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if ui.button("Reset Terminal").clicked() {
+                            if let Some(pty) = &self.pty {
+                                pty.write(b"\x1bc");
+                            }
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
+                        if ui.button("Rename").clicked() {
+                            ix.action = Some(PanelAction::Rename);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if ui.button("Close").clicked() {
+                            ix.action = Some(PanelAction::Close);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
+                        if ui.button("Copy Link").clicked() {
+                            ix.action = Some(PanelAction::CopyLink);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                    });
+                });
+            // Close menu when clicking outside
+            if area_resp.response.clicked_elsewhere() {
+                ui.memory_mut(|m| m.close_popup());
+                self.context_menu_pos = None;
             }
-            if ui.button("Select All").clicked() {
-                let last_col = (self.last_cols as usize).saturating_sub(1);
-                let last_row = (self.last_rows as usize).saturating_sub(1);
-                self.selection = Some((0, 0, last_col, last_row));
-                self.selection_display_offset =
-                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
-                ui.close_menu();
-            }
-            ui.separator();
-            if ui.button("Clear Scrollback").clicked() {
-                if let Some(pty) = &self.pty {
-                    pty.write(b"\x1b[3J");
-                }
-                ui.close_menu();
-            }
-            if ui.button("Reset Terminal").clicked() {
-                if let Some(pty) = &self.pty {
-                    pty.write(b"\x1bc");
-                }
-                ui.close_menu();
-            }
-            ui.separator();
-            if ui.button("Rename").clicked() {
-                ix.action = Some(PanelAction::Rename);
-                ui.close_menu();
-            }
-            if ui.button("Close").clicked() {
-                ix.action = Some(PanelAction::Close);
-                ui.close_menu();
-            }
-        });
+        }
 
         ix
     }

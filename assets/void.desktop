@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Void Terminal
+Comment=Infinite canvas terminal emulator
+Exec=void %u
+Icon=void
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+MimeType=x-scheme-handler/void;

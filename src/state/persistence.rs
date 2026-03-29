@@ -29,6 +29,8 @@ pub struct WorkspaceState {
 /// Serializable snapshot of a single terminal panel (layout only, no PTY).
 #[derive(Serialize, Deserialize)]
 pub struct PanelState {
+    #[serde(default)]
+    pub id: Option<String>,
     pub title: String,
     pub position: [f32; 2],
     pub size: [f32; 2],
