@@ -97,6 +97,7 @@ pub struct TerminalPanel {
     /// so accumulated movement can escape snap zones naturally.
     pub resize_virtual_rect: Option<Rect>,
     bell_flash_until: f64,
+    context_menu_pos: Option<Pos2>,
     /// When set, reset terminal modes (ALT_SCREEN, MOUSE_MODE) after this time.
     /// Triggered when Ctrl+C is sent while in ALT_SCREEN — the TUI app is likely
     /// being killed and won't send cleanup escape sequences.
@@ -221,6 +222,7 @@ impl TerminalPanel {
             drag_virtual_pos: None,
             resize_virtual_rect: None,
             bell_flash_until: 0.0,
+            context_menu_pos: None,
             pending_mode_reset: None,
         }
     }
@@ -249,6 +251,7 @@ impl TerminalPanel {
             drag_virtual_pos: None,
             resize_virtual_rect: None,
             bell_flash_until: 0.0,
+            context_menu_pos: None,
             pending_mode_reset: None,
         }
     }
@@ -1234,64 +1237,90 @@ impl TerminalPanel {
         }
 
         // Context menu with Copy / Paste / Select All
-        body_resp.context_menu(|ui| {
-            let has_sel = self.selection.is_some();
-            if ui.add_enabled(has_sel, egui::Button::new("Copy")).clicked() {
-                if let Some(text) = self.selected_text() {
-                    ui.ctx().copy_text(text);
-                }
-                ui.close_menu();
-            }
-            if ui.button("Paste").clicked() {
-                if let Some(pty) = &self.pty {
-                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        if let Ok(text) = clipboard.get_text() {
-                            let mode = self.input_mode();
-                            if mode.bracketed_paste {
-                                let mut bytes = Vec::new();
-                                bytes.extend_from_slice(b"\x1b[200~");
-                                bytes.extend_from_slice(text.as_bytes());
-                                bytes.extend_from_slice(b"\x1b[201~");
-                                pty.write(&bytes);
-                            } else {
-                                pty.write(text.as_bytes());
+        // Rendered at Order::Debug so it appears above terminal content (Order::Tooltip).
+        let menu_id = ui.id().with("ctx_menu").with(self.id);
+        if body_resp.secondary_clicked() {
+            // Store click position in canvas space so the menu moves with pan/zoom
+            let screen_pos = ui.input(|i| i.pointer.latest_pos());
+            self.context_menu_pos = screen_pos.map(|p| transform.inverse() * p);
+            ui.memory_mut(|m| m.toggle_popup(menu_id));
+        }
+        if ui.memory(|m| m.is_popup_open(menu_id)) {
+            // Convert canvas position back to screen space each frame
+            let menu_pos = self
+                .context_menu_pos
+                .map(|p| transform * p)
+                .unwrap_or(body_resp.rect.center());
+            let area_resp = egui::Area::new(menu_id)
+                .order(egui::Order::Debug)
+                .fixed_pos(menu_pos)
+                .interactable(true)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        let has_sel = self.selection.is_some();
+                        if ui.add_enabled(has_sel, egui::Button::new("Copy")).clicked() {
+                            if let Some(text) = self.selected_text() {
+                                ui.ctx().copy_text(text);
                             }
+                            ui.memory_mut(|m| m.close_popup());
                         }
-                    }
-                }
-                ui.close_menu();
+                        if ui.button("Paste").clicked() {
+                            if let Some(pty) = &self.pty {
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    if let Ok(text) = clipboard.get_text() {
+                                        let mode = self.input_mode();
+                                        if mode.bracketed_paste {
+                                            let mut bytes = Vec::new();
+                                            bytes.extend_from_slice(b"\x1b[200~");
+                                            bytes.extend_from_slice(text.as_bytes());
+                                            bytes.extend_from_slice(b"\x1b[201~");
+                                            pty.write(&bytes);
+                                        } else {
+                                            pty.write(text.as_bytes());
+                                        }
+                                    }
+                                }
+                            }
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if ui.button("Select All").clicked() {
+                            let last_col = (self.last_cols as usize).saturating_sub(1);
+                            let last_row = (self.last_rows as usize).saturating_sub(1);
+                            self.selection = Some((0, 0, last_col, last_row));
+                            self.selection_display_offset =
+                                scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
+                        if ui.button("Clear Scrollback").clicked() {
+                            if let Some(pty) = &self.pty {
+                                pty.write(b"\x1b[3J");
+                            }
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if ui.button("Reset Terminal").clicked() {
+                            if let Some(pty) = &self.pty {
+                                pty.write(b"\x1bc");
+                            }
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
+                        if ui.button("Rename").clicked() {
+                            ix.action = Some(PanelAction::Rename);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if ui.button("Close").clicked() {
+                            ix.action = Some(PanelAction::Close);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                    });
+                });
+            // Close menu when clicking outside
+            if area_resp.response.clicked_elsewhere() {
+                ui.memory_mut(|m| m.close_popup());
+                self.context_menu_pos = None;
             }
-            if ui.button("Select All").clicked() {
-                let last_col = (self.last_cols as usize).saturating_sub(1);
-                let last_row = (self.last_rows as usize).saturating_sub(1);
-                self.selection = Some((0, 0, last_col, last_row));
-                self.selection_display_offset =
-                    scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
-                ui.close_menu();
-            }
-            ui.separator();
-            if ui.button("Clear Scrollback").clicked() {
-                if let Some(pty) = &self.pty {
-                    pty.write(b"\x1b[3J");
-                }
-                ui.close_menu();
-            }
-            if ui.button("Reset Terminal").clicked() {
-                if let Some(pty) = &self.pty {
-                    pty.write(b"\x1bc");
-                }
-                ui.close_menu();
-            }
-            ui.separator();
-            if ui.button("Rename").clicked() {
-                ix.action = Some(PanelAction::Rename);
-                ui.close_menu();
-            }
-            if ui.button("Close").clicked() {
-                ix.action = Some(PanelAction::Close);
-                ui.close_menu();
-            }
-        });
+        }
 
         ix
     }
