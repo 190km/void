@@ -42,6 +42,8 @@ pub struct VoidApp {
     pending_deeplink: Option<String>,
     ipc_server: Option<IpcServer>,
     toast: Option<Toast>,
+    navigate_dialog_open: bool,
+    navigate_buf: String,
 }
 
 impl VoidApp {
@@ -119,6 +121,8 @@ impl VoidApp {
             pending_deeplink: url_arg,
             ipc_server,
             toast: None,
+            navigate_dialog_open: false,
+            navigate_buf: String::new(),
         }
     }
 
@@ -249,6 +253,29 @@ impl VoidApp {
             Command::ToggleFullscreen => {
                 let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+            }
+            Command::NavigateToLink => {
+                self.navigate_dialog_open = true;
+                self.navigate_buf.clear();
+            }
+            Command::CopyLink => {
+                // Copy link to focused panel, or viewport position if none focused
+                let ws_id = self.ws().id;
+                let url = if let Some(p) = self.ws().panels.iter().find(|p| p.focused()) {
+                    format!("void://open/{}/{}", ws_id, p.id())
+                } else {
+                    let center = self.viewport.visible_canvas_rect(screen_rect).center();
+                    let z = self.viewport.zoom;
+                    format!(
+                        "void://open/{ws_id}/@{:.0},{:.0},{:.2}",
+                        center.x, center.y, z
+                    )
+                };
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    let _ = clipboard.set_text(&url);
+                }
+                let time = ctx.input(|i| i.time);
+                self.toast = Some(Toast::new("Link copied to clipboard", 2.0, time));
             }
         }
     }
@@ -382,6 +409,10 @@ impl VoidApp {
                 cmd = Some(Command::ZoomToFit);
             } else if i.key_pressed(egui::Key::F2) && !i.modifiers.ctrl {
                 cmd = Some(Command::RenameTerminal);
+            } else if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::L) {
+                cmd = Some(Command::NavigateToLink);
+            } else if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::L) {
+                cmd = Some(Command::CopyLink);
             }
         });
         cmd
@@ -445,7 +476,8 @@ impl eframe::App for VoidApp {
         }
 
         // Keyboard input to focused terminal
-        if !self.command_palette.open && self.renaming_panel.is_none() {
+        if !self.command_palette.open && self.renaming_panel.is_none() && !self.navigate_dialog_open
+        {
             for p in &mut self.ws_mut().panels {
                 if p.focused() {
                     p.handle_input(ctx);
@@ -514,6 +546,61 @@ impl eframe::App for VoidApp {
             if close {
                 self.renaming_panel = None;
                 self.rename_buf.clear();
+            }
+        }
+
+        // Navigate to Link dialog
+        if self.navigate_dialog_open {
+            let mut close = false;
+            let mut navigate_url: Option<String> = None;
+            egui::Area::new(egui::Id::new("navigate_dialog"))
+                .order(egui::Order::Debug)
+                .fixed_pos(Pos2::new(
+                    screen_rect.center().x - 200.0,
+                    screen_rect.min.y + 120.0,
+                ))
+                .show(ctx, |ui| {
+                    egui::Frame::default()
+                        .fill(Color32::from_rgb(20, 20, 20))
+                        .stroke(egui::Stroke::new(0.5, Color32::from_rgb(40, 40, 40)))
+                        .rounding(8.0)
+                        .inner_margin(14.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("Navigate to Link")
+                                    .color(Color32::from_rgb(160, 160, 160))
+                                    .size(12.0),
+                            );
+                            ui.add_space(6.0);
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut self.navigate_buf)
+                                    .desired_width(380.0)
+                                    .font(egui::FontId::monospace(12.0))
+                                    .hint_text("void://open/..."),
+                            );
+                            r.request_focus();
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Go").clicked()
+                                    || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    navigate_url = Some(self.navigate_buf.clone());
+                                    close = true;
+                                }
+                                if ui.button("Cancel").clicked()
+                                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                                {
+                                    close = true;
+                                }
+                            });
+                        });
+                });
+            if close {
+                self.navigate_dialog_open = false;
+                self.navigate_buf.clear();
+            }
+            if let Some(url) = navigate_url {
+                self.pending_deeplink = Some(url);
             }
         }
 

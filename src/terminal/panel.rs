@@ -67,6 +67,27 @@ pub const VOID_SHORTCUTS: &[(Modifiers, Key)] = &[
         },
         Key::T,
     ),
+    // Deep-link navigation shortcuts
+    (
+        Modifiers {
+            alt: false,
+            ctrl: true,
+            shift: false,
+            mac_cmd: false,
+            command: false,
+        },
+        Key::L,
+    ),
+    (
+        Modifiers {
+            alt: false,
+            ctrl: true,
+            shift: true,
+            mac_cmd: false,
+            command: false,
+        },
+        Key::L,
+    ),
 ];
 
 pub struct TerminalPanel {

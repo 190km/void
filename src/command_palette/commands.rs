@@ -16,6 +16,8 @@ pub enum Command {
     FocusNext,
     FocusPrev,
     ToggleFullscreen,
+    NavigateToLink,
+    CopyLink,
 }
 
 /// A registered command with display info.
@@ -91,5 +93,15 @@ pub const COMMANDS: &[CommandEntry] = &[
         command: Command::ToggleFullscreen,
         label: "Toggle Fullscreen",
         shortcut: "F11",
+    },
+    CommandEntry {
+        command: Command::NavigateToLink,
+        label: "Navigate to Link",
+        shortcut: "Ctrl+L",
+    },
+    CommandEntry {
+        command: Command::CopyLink,
+        label: "Copy Link to Focused Panel",
+        shortcut: "Ctrl+Shift+L",
     },
 ];
