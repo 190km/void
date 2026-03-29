@@ -4,6 +4,9 @@ use egui::{Color32, Pos2, Vec2};
 use crate::canvas::viewport::Viewport;
 use crate::command_palette::commands::Command;
 use crate::command_palette::CommandPalette;
+use crate::deeplink::ipc::IpcServer;
+use crate::deeplink::toast::Toast;
+use crate::deeplink::DeepLink;
 use crate::sidebar::{Sidebar, SidebarResponse, SIDEBAR_BG, SIDEBAR_BORDER, SIDEBAR_PADDING_H};
 use crate::state::workspace::Workspace;
 use crate::terminal::panel::PanelAction;
@@ -35,12 +38,19 @@ pub struct VoidApp {
     brand_texture: egui::TextureHandle,
     sidebar: Sidebar,
     update_checker: UpdateChecker,
+    // Deep-link navigation
+    pending_deeplink: Option<String>,
+    ipc_server: Option<IpcServer>,
+    toast: Option<Toast>,
 }
 
 impl VoidApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, url_arg: Option<String>) -> Self {
         let ctx = cc.egui_ctx.clone();
         Self::setup_fonts(&ctx);
+
+        // Start IPC server for receiving deep-links from other instances
+        let ipc_server = IpcServer::start(ctx.clone());
 
         let brand_texture = {
             let png = include_bytes!("../assets/brand.png");
@@ -106,6 +116,9 @@ impl VoidApp {
             brand_texture,
             sidebar: Sidebar::default(),
             update_checker: UpdateChecker::new(cc.egui_ctx.clone()),
+            pending_deeplink: url_arg,
+            ipc_server,
+            toast: None,
         }
     }
 
@@ -269,6 +282,77 @@ impl VoidApp {
         );
     }
 
+    /// Navigate to a deep-link target: workspace, panel, or canvas position.
+    fn navigate_to_deeplink(&mut self, link: DeepLink, canvas_rect: egui::Rect, time: f64) {
+        // Find workspace by UUID
+        let ws_id = match &link {
+            DeepLink::Workspace { workspace_id }
+            | DeepLink::Panel { workspace_id, .. }
+            | DeepLink::Position { workspace_id, .. } => workspace_id.clone(),
+        };
+
+        let ws_idx = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id.to_string() == ws_id);
+
+        let Some(ws_idx) = ws_idx else {
+            self.toast = Some(Toast::new("Workspace not found", 3.0, time));
+            return;
+        };
+
+        self.switch_workspace(ws_idx);
+
+        match link {
+            DeepLink::Workspace { .. } => {}
+            DeepLink::Panel { panel_id, .. } => {
+                let panel_pos = self
+                    .ws()
+                    .panels
+                    .iter()
+                    .position(|p| p.id().to_string() == panel_id);
+
+                if let Some(idx) = panel_pos {
+                    let center = self.ws().panels[idx].rect().center();
+                    self.viewport.pan_to_center(center, canvas_rect);
+                    self.ws_mut().bring_to_front(idx);
+                } else {
+                    self.toast = Some(Toast::new("Panel not found", 3.0, time));
+                }
+            }
+            DeepLink::Position { x, y, zoom, .. } => {
+                self.viewport.pan_to_center(Pos2::new(x, y), canvas_rect);
+                if let Some(z) = zoom {
+                    self.viewport.zoom = z.clamp(
+                        crate::canvas::config::ZOOM_MIN,
+                        crate::canvas::config::ZOOM_MAX,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Process any pending deep-link URL (from CLI arg or IPC).
+    fn process_pending_deeplinks(&mut self, canvas_rect: egui::Rect, time: f64) {
+        // Check IPC server for incoming URL from another instance
+        if let Some(ref server) = self.ipc_server {
+            if let Some(url) = server.take_pending() {
+                self.pending_deeplink = Some(url);
+            }
+        }
+
+        // Process pending deep-link
+        if let Some(url) = self.pending_deeplink.take() {
+            match crate::deeplink::parse(&url) {
+                Ok(link) => self.navigate_to_deeplink(link, canvas_rect, time),
+                Err(e) => {
+                    log::warn!("Invalid deep-link URL: {e}");
+                    self.toast = Some(Toast::new(format!("Invalid link: {e}"), 3.0, time));
+                }
+            }
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> Option<Command> {
         if self.command_palette.open {
             return None;
@@ -350,6 +434,10 @@ impl eframe::App for VoidApp {
         if let Some(cmd) = self.handle_shortcuts(ctx) {
             self.execute_command(cmd, ctx, canvas_rect_for_commands);
         }
+
+        // Process pending deep-link navigation (from CLI arg or IPC)
+        let time = ctx.input(|i| i.time);
+        self.process_pending_deeplinks(canvas_rect_for_commands, time);
 
         // Sync titles
         for p in &mut self.ws_mut().panels {
@@ -737,6 +825,17 @@ impl eframe::App for VoidApp {
                                 self.renaming_panel = Some(self.ws().panels[*idx].id());
                                 self.rename_buf = self.ws().panels[*idx].title().to_string();
                             }
+                            PanelAction::CopyLink => {
+                                let ws_id = self.ws().id;
+                                let panel_id = self.ws().panels[*idx].id();
+                                let url = format!("void://open/{ws_id}/{panel_id}");
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    let _ = clipboard.set_text(&url);
+                                }
+                                let time = ctx.input(|i| i.time);
+                                self.toast =
+                                    Some(Toast::new("Link copied to clipboard", 2.0, time));
+                            }
                         }
                     }
                 }
@@ -824,6 +923,25 @@ impl eframe::App for VoidApp {
                         self.show_minimap = false;
                     }
                 });
+        }
+
+        // --- Toast notification overlay ---
+        if let Some(ref toast) = self.toast {
+            let time = ctx.input(|i| i.time);
+            egui::Area::new(egui::Id::new("toast_overlay"))
+                .order(egui::Order::Debug)
+                .fixed_pos(canvas_rect.center_bottom() - Vec2::new(0.0, 60.0))
+                .interactable(false)
+                .show(ctx, |ui| {
+                    if !toast.show(ui, canvas_rect, time) {
+                        // will be cleaned up below
+                    }
+                });
+            if toast.is_expired(time) {
+                self.toast = None;
+            } else {
+                ctx.request_repaint();
+            }
         }
     }
 }

@@ -61,6 +61,12 @@ Section "Install"
   CreateShortcut "$SMPROGRAMS\Void\Void.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\void.ico" 0
   CreateShortcut "$SMPROGRAMS\Void\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 
+  ; Register void:// URL protocol handler for deep-link navigation
+  WriteRegStr HKCU "Software\Classes\void" "" "URL:Void Protocol"
+  WriteRegStr HKCU "Software\Classes\void" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\void\DefaultIcon" "" '"$INSTDIR\void.ico"'
+  WriteRegStr HKCU "Software\Classes\void\shell\open\command" "" '"$INSTDIR\${APP_EXE}" "%1"'
+
   ; Registry — install path + Add/Remove Programs
   WriteRegStr HKCU "Software\Void" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Void" \
@@ -98,6 +104,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Void\Uninstall.lnk"
   RMDir "$SMPROGRAMS\Void"
 
+  DeleteRegKey HKCU "Software\Classes\void"
   DeleteRegKey HKCU "Software\Void"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Void"
 SectionEnd

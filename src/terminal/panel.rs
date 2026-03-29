@@ -107,6 +107,7 @@ pub struct TerminalPanel {
 pub enum PanelAction {
     Close,
     Rename,
+    CopyLink,
 }
 
 #[derive(Default)]
@@ -264,6 +265,12 @@ impl TerminalPanel {
         let color = Color32::from_rgb(state.color[0], state.color[1], state.color[2]);
 
         let mut panel = Self::new_with_terminal(ctx, position, size, color, cwd);
+        // Restore persisted panel ID if available (stable deep-link targets)
+        if let Some(ref id_str) = state.id {
+            if let Ok(id) = uuid::Uuid::parse_str(id_str) {
+                panel.id = id;
+            }
+        }
         panel.z_index = state.z_index;
         panel.focused = state.focused;
         panel
@@ -272,6 +279,7 @@ impl TerminalPanel {
     /// Snapshot the panel layout for persistence (no PTY state).
     pub fn to_saved(&self) -> crate::state::persistence::PanelState {
         crate::state::persistence::PanelState {
+            id: Some(self.id.to_string()),
             title: self.title.clone(),
             position: [self.position.x, self.position.y],
             size: [self.size.x, self.size.y],
@@ -1284,6 +1292,11 @@ impl TerminalPanel {
             }
             if ui.button("Close").clicked() {
                 ix.action = Some(PanelAction::Close);
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Copy Link").clicked() {
+                ix.action = Some(PanelAction::CopyLink);
                 ui.close_menu();
             }
         });
