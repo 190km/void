@@ -81,9 +81,9 @@ pub struct TerminalPanel {
     last_cols: u16,
     last_rows: u16,
     spawn_error: Option<String>,
-    // Selection state — viewport cell coordinates at the time of selection.
-    // Rows are relative to the viewport when selection_display_offset was captured.
-    selection: Option<(usize, usize, usize, usize)>, // (start_col, start_row, end_col, end_row)
+    // Selection state — cell coordinates relative to selection_display_offset.
+    // Rows can be negative (content scrolled above viewport).
+    selection: Option<(i32, i32, i32, i32)>, // (start_col, start_row, end_col, end_row)
     selection_display_offset: usize,
     selecting: bool,
     scroll_remainder: f32,
@@ -419,8 +419,8 @@ impl TerminalPanel {
                 let delta = new_offset as i32 - old_offset as i32;
                 if delta != 0 {
                     if let Some(ref mut sel) = self.selection {
-                        sel.1 = (sel.1 as i32 + delta).max(0) as usize;
-                        sel.3 = (sel.3 as i32 + delta).max(0) as usize;
+                        sel.1 += delta;
+                        sel.3 += delta;
                     }
                     self.selection_display_offset = new_offset;
                 }
@@ -508,14 +508,14 @@ impl TerminalPanel {
     }
 
     /// Convert pointer position to terminal cell (col, row), clamped to grid bounds.
-    fn pos_to_cell(&self, pos: Pos2, body: Rect, ctx: &egui::Context) -> (usize, usize) {
+    fn pos_to_cell(&self, pos: Pos2, body: Rect, ctx: &egui::Context) -> (i32, i32) {
         let (cw, ch) = crate::terminal::renderer::cell_size(ctx);
         let col = ((pos.x - body.min.x - crate::terminal::renderer::PAD_X) / cw)
             .floor()
-            .clamp(0.0, (self.last_cols as f32) - 1.0) as usize;
+            .clamp(0.0, (self.last_cols as f32) - 1.0) as i32;
         let row = ((pos.y - body.min.y - crate::terminal::renderer::PAD_Y) / ch)
             .floor()
-            .clamp(0.0, (self.last_rows as f32) - 1.0) as usize;
+            .clamp(0.0, (self.last_rows as f32) - 1.0) as i32;
         (col, row)
     }
 
@@ -523,7 +523,14 @@ impl TerminalPanel {
         let (sc, sr, ec, er) = self.selection?;
         let pty = self.pty.as_ref()?;
         let term = pty.term.lock().ok()?;
-        let text = extract_selection_text(&term, sc, sr, ec, er, self.selection_display_offset);
+        let text = extract_selection_text(
+            &term,
+            sc.max(0) as usize,
+            sr.max(0) as usize,
+            ec.max(0) as usize,
+            er.max(0) as usize,
+            self.selection_display_offset,
+        );
         if text.is_empty() {
             None
         } else {
@@ -791,31 +798,21 @@ impl TerminalPanel {
                 let (cw, ch) = crate::terminal::renderer::cell_size(ui.ctx());
                 let pad_x = crate::terminal::renderer::PAD_X;
                 let pad_y = crate::terminal::renderer::PAD_Y;
-                let max_col = self.last_cols as usize;
+                let max_col = self.last_cols as i32;
                 let max_row = self.last_rows as i32;
 
                 let (start_row, start_col, end_row, end_col) = if sr < er || (sr == er && sc <= ec)
                 {
-                    (
-                        sr,
-                        sc.min(max_col.saturating_sub(1)),
-                        er,
-                        ec.min(max_col.saturating_sub(1)),
-                    )
+                    (sr, sc.min(max_col - 1), er, ec.min(max_col - 1))
                 } else {
-                    (
-                        er,
-                        ec.min(max_col.saturating_sub(1)),
-                        sr,
-                        sc.min(max_col.saturating_sub(1)),
-                    )
+                    (er, ec.min(max_col - 1), sr, sc.min(max_col - 1))
                 };
 
-                // Adjust rows for scroll: positive delta = scrolled back = rows move down
+                // Adjust rows for scroll delta since selection was made
                 let current_offset = scrollbar_state.map(|s| s.display_offset).unwrap_or(0) as i32;
                 let offset_delta = current_offset - self.selection_display_offset as i32;
-                let adj_start = start_row as i32 + offset_delta;
-                let adj_end = end_row as i32 + offset_delta;
+                let adj_start = start_row + offset_delta;
+                let adj_end = end_row + offset_delta;
 
                 let screen_content =
                     Rect::from_min_max(transform * content_rect.min, transform * content_rect.max)
@@ -828,21 +825,20 @@ impl TerminalPanel {
                     if row_i < 0 || row_i >= max_row {
                         continue;
                     }
-                    let row = row_i as usize;
-                    let orig_row = row_i - offset_delta; // original selection row
-                    let c0 = if orig_row == start_row as i32 {
-                        start_col
+                    let orig_row = row_i - offset_delta;
+                    let c0 = if orig_row == start_row {
+                        start_col.max(0)
                     } else {
                         0
                     };
-                    let c1 = (if orig_row == end_row as i32 {
+                    let c1 = (if orig_row == end_row {
                         end_col + 1
                     } else {
                         max_col
                     })
                     .min(max_col);
                     let x0 = content_rect.min.x + pad_x + c0 as f32 * cw;
-                    let y0 = content_rect.min.y + pad_y + row as f32 * ch;
+                    let y0 = content_rect.min.y + pad_y + row_i as f32 * ch;
                     let x1 = content_rect.min.x + pad_x + c1 as f32 * cw;
                     let sel_rect = Rect::from_min_max(
                         transform * Pos2::new(x0, y0),
@@ -1097,8 +1093,10 @@ impl TerminalPanel {
                     // Double-click: select word
                     if let Some(pos) = body_resp.interact_pointer_pos() {
                         let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                        if let Some((start, end)) = self.word_boundaries_at(col, row) {
-                            self.selection = Some((start, row, end, row));
+                        if let Some((start, end)) =
+                            self.word_boundaries_at(col as usize, row as usize)
+                        {
+                            self.selection = Some((start as i32, row, end as i32, row));
                             self.selection_display_offset =
                                 scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                         }
@@ -1108,7 +1106,7 @@ impl TerminalPanel {
                     // Triple-click: select entire line
                     if let Some(pos) = body_resp.interact_pointer_pos() {
                         let (_, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
-                        let last_col = (self.last_cols as usize).saturating_sub(1);
+                        let last_col = (self.last_cols as i32) - 1;
                         self.selection = Some((0, row, last_col, row));
                         self.selection_display_offset =
                             scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
@@ -1129,19 +1127,6 @@ impl TerminalPanel {
                 self.selection_display_offset =
                     scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
                 self.selecting = true;
-            }
-        }
-
-        // Sync selection with scroll changes during active selection (mouse-wheel scroll)
-        if self.selecting {
-            let current_offset = scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
-            if current_offset != self.selection_display_offset {
-                let delta = current_offset as i32 - self.selection_display_offset as i32;
-                if let Some(ref mut sel) = self.selection {
-                    sel.1 = (sel.1 as i32 + delta).max(0) as usize;
-                    sel.3 = (sel.3 as i32 + delta).max(0) as usize;
-                }
-                self.selection_display_offset = current_offset;
             }
         }
 
@@ -1172,8 +1157,8 @@ impl TerminalPanel {
                     let lines = -(((distance / (row_height * 3.0)).ceil() as i32).max(1));
                     self.auto_scroll_selection(lines);
                     if let Some(ref mut sel) = self.selection {
-                        sel.2 = (self.last_cols as usize).saturating_sub(1);
-                        sel.3 = (self.last_rows as usize).saturating_sub(1);
+                        sel.2 = (self.last_cols as i32) - 1;
+                        sel.3 = (self.last_rows as i32) - 1;
                     }
                     auto_scrolled = true;
                     ui.ctx().request_repaint();
@@ -1181,17 +1166,21 @@ impl TerminalPanel {
             }
 
             if !auto_scrolled {
+                // Convert viewport row to original selection offset coordinate
+                let current_offset = scrollbar_state.map(|s| s.display_offset).unwrap_or(0) as i32;
+                let offset_delta = current_offset - self.selection_display_offset as i32;
+
                 if let Some(pos) = body_resp.hover_pos() {
                     let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                     if let Some(ref mut sel) = self.selection {
                         sel.2 = col;
-                        sel.3 = row;
+                        sel.3 = row - offset_delta;
                     }
                 } else if let Some(pos) = body_resp.interact_pointer_pos() {
                     let (col, row) = self.pos_to_cell(pos, content_rect, ui.ctx());
                     if let Some(ref mut sel) = self.selection {
                         sel.2 = col;
-                        sel.3 = row;
+                        sel.3 = row - offset_delta;
                     }
                 }
             }
@@ -1209,7 +1198,9 @@ impl TerminalPanel {
                     + if mods.ctrl { 16 } else { 0 };
 
                 // Helper: send SGR mouse event
-                let send_mouse = |btn: u8, col: usize, row: usize, press: bool| {
+                let send_mouse = |btn: u8, col: i32, row: i32, press: bool| {
+                    let col = col.max(0) as usize;
+                    let row = row.max(0) as usize;
                     let suffix = if press { 'M' } else { 'm' };
                     let seq = format!("\x1b[<{};{};{}{}", btn + mod_bits, col + 1, row + 1, suffix);
                     pty.write(seq.as_bytes());
@@ -1323,8 +1314,8 @@ impl TerminalPanel {
                 ui.close_menu();
             }
             if ui.button("Select All").clicked() {
-                let last_col = (self.last_cols as usize).saturating_sub(1);
-                let last_row = (self.last_rows as usize).saturating_sub(1);
+                let last_col = (self.last_cols as i32) - 1;
+                let last_row = (self.last_rows as i32) - 1;
                 self.selection = Some((0, 0, last_col, last_row));
                 self.selection_display_offset =
                     scrollbar_state.map(|s| s.display_offset).unwrap_or(0);
