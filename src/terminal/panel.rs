@@ -579,7 +579,7 @@ impl TerminalPanel {
         // Full-panel opaque fill so higher-z panels fully occlude lower-z panels.
         let zoom = transform.scaling;
         let screen_pr = Rect::from_min_max(transform * pr.min, transform * pr.max);
-        let shared_layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("term_text"));
+        let shared_layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("term_text"));
         {
             // Full-panel fill — occludes everything from lower-z panels.
             let cp = ui
