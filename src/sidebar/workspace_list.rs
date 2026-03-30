@@ -66,7 +66,7 @@ pub fn draw_workspace_tree(
             egui::Id::new("ws_header").with(ws_idx),
             egui::Sense::click(),
         );
-        if header_resp.hovered() && !is_active {
+        if header_resp.hovered() {
             let hover_rect = Rect::from_center_size(
                 header_click_rect.center(),
                 Vec2::new(header_click_rect.width(), ITEM_HEIGHT),
