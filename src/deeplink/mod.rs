@@ -6,6 +6,8 @@
 //   void://open/<workspace_id>/@<x>,<y>[,<zoom>]  → navigate to canvas coordinates
 
 pub mod ipc;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod register;
 pub mod toast;
 

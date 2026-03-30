@@ -54,6 +54,11 @@ impl VoidApp {
         // Start IPC server for receiving deep-links from other instances
         let ipc_server = IpcServer::start(ctx.clone());
 
+        // On macOS, store the egui context so Apple Event callbacks can
+        // trigger repaints when a void:// URL arrives.
+        #[cfg(target_os = "macos")]
+        crate::deeplink::macos::set_egui_context(cc.egui_ctx.clone());
+
         let brand_texture = {
             let png = include_bytes!("../assets/brand.png");
             let img = image::load_from_memory(png)
@@ -364,6 +369,14 @@ impl VoidApp {
         // Check IPC server for incoming URL from another instance
         if let Some(ref server) = self.ipc_server {
             if let Some(url) = server.take_pending() {
+                self.pending_deeplink = Some(url);
+            }
+        }
+
+        // On macOS, also check for URLs delivered via Apple Events
+        #[cfg(target_os = "macos")]
+        if self.pending_deeplink.is_none() {
+            if let Some(url) = crate::deeplink::macos::take_pending_url() {
                 self.pending_deeplink = Some(url);
             }
         }
